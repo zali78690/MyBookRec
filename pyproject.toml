@@ -1,0 +1,51 @@
+[project]
+name = "mybookrec"
+version = "0.1.0"
+description = "Personal book recommendation system using a two-tower neural network"
+requires-python = ">=3.12"
+dependencies = [
+    "polars",
+    "torch",
+    "sentence-transformers",
+    "faiss-cpu",
+    "pydantic-settings",
+    "pyyaml",
+    "huggingface-hub",
+    "numpy",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+    "pyright",
+    "pre-commit",
+    "jupyter",
+]
+
+[tool.uv]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "D", "UP", "SIM", "C4"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
