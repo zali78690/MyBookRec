@@ -1,1 +1,4 @@
 .env
+data/raw/
+__pycache__
+/src/mybookrec.egg-info
