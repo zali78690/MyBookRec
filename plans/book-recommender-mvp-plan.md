@@ -182,6 +182,7 @@ A good test verifies **external behavior and data contracts**, not internal impl
 - **Author embeddings**: two viable approaches for v2 — (A) author ID lookup table trained end-to-end, (B) precomputed per-author embedding as mean of their books' description embeddings. Option B avoids cold-start for obscure authors.
 - **Explicit dislike genre signal**: currently genre distribution is built from positives only. A v2 "dislike genre vector" (from 1–2 star books) could be added to the user tower as a separate input.
 - **Temporal decay on like embedding**: for MVP, the like embedding treats all 4+ star ratings equally. A v2 improvement is multiplying each book's weight by `exp(-λ * days_since_rating)` so recent ratings count more than old ones. `λ` would be a config hyperparameter (λ = 0 recovers MVP behavior). Requires verifying `date_added` coverage in EDA first — if the Goodreads CSV has sparse or unparseable dates, this signal degrades. Same decay could optionally be applied to the genre distribution.
+- **Updated genre taxonomy with hybrid vectors**: the MVP uses the UCSD `book_genres_initial.json` genre list, which is a fixed snapshot of Goodreads shelf taxonomy and likely stale. A v2 improvement replaces this with a maintained taxonomy (BISAC from bisg.org or Thema from editeur.org), then builds genre vectors via a two-step process: (1) embed all unique `popular_shelves` names using the existing `all-MiniLM-L6-v2` model, (2) embed each taxonomy category label, (3) map each shelf's count signal to taxonomy dimensions via cosine similarity, producing a soft count-weighted genre vector per book. This eliminates hard taxonomy coupling, handles shelf name variants (e.g. "sci-fi" / "scifi" / "science-fiction" all map to the same BISAC category), and produces a denser, less collinear genre space. Genre vector dimensionality will change from ~25 to ~50 (BISAC top-level), so user and item tower input dims must be updated accordingly.
 
 ---
 
@@ -354,6 +355,7 @@ This is a rough ordered guide from EDA to a working local MVP. Steps within a ph
 - Author embeddings (v2 item feature)
 - Dislike genre vector in user tower
 - Inverse-rating weighting for dislike embedding
+- Updated genre taxonomy with hybrid vectors (see Future Scope Notes)
 - Contrastive/triplet loss (replace BCE)
 - Log-frequency negative sampling
 - MLflow experiment tracking
