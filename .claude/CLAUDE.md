@@ -43,7 +43,7 @@ Personal book recommendation system using a two-tower neural network trained on 
 ## Project Structure
 
 ```
-src/mybookrec/
+mybookrec/
 ├── data/        # loading, cleaning, filtering (language, ratings, quality)
 ├── features/    # embedding precomputation, genre vectors, user feature construction, negative sampling
 ├── model/       # two-tower architecture (UserTower, ItemTower), training loop
