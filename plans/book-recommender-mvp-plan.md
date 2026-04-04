@@ -190,7 +190,7 @@ A good test verifies **external behavior and data contracts**, not internal impl
 
 This is a rough ordered guide from EDA to a working local MVP. Steps within a phase can overlap; phases are sequential.
 
-### Phase 0: EDA (`notebooks/EDA.ipynb`)
+### Phase 0: EDA (`notebooks/EDA.ipynb`) DONE
 
 1. **Inspect `books_df`**
    - Check `num_pages`: count empty strings (not just nulls — it's a str column)
@@ -216,7 +216,7 @@ This is a rough ordered guide from EDA to a working local MVP. Steps within a ph
 
 ---
 
-### Phase 1: Data Pipeline (`mybookrec/data/`)
+### Phase 1: Data Pipeline (`mybookrec/data/`) DONE
 
 5. **Load and filter interactions**
    - Load `goodreads_interactions_dedup.json.gz`
