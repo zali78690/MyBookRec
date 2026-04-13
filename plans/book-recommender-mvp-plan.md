@@ -246,7 +246,7 @@ This is a rough ordered guide from EDA to a working local MVP. Steps within a ph
 
 ### Phase 2: Feature Engineering (`mybookrec/features/`)
 
-10. **Build genre vocab**
+10. **Build genre vocab** DONE
     - Collect all unique genre keys across the corpus
     - Save as an ordered list to `data/processed/genre_vocab.json` — this is the fixed mapping for all genre vectors
 
