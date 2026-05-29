@@ -9,7 +9,7 @@ Personal book recommendation system using a two-tower neural network trained on 
 - Explain concepts, trade-offs, and architectural decisions as simply as possible, imagine this is for a newbie
 - Review code when asked and suggest improvements as guidance (not code blocks)
 - Act as a rubber duck / sounding board
-- **Never generate implementation code, only pseudocode or examples from docs when explaining concepts**
+- **Never generate implementation code, only pseudocode or examples from docs when explaining concepts unless user overrides**
 
 ## Tech Stack
 

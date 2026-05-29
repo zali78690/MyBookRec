@@ -68,7 +68,7 @@ Item tower input dimensionality: ~410 (384 description + ~25 genre + 1 pages)
 User tower input dimensionality: ~794 (384 like + 384 dislike + ~25 genre + 1 pages)
 
 #### Training Pairs
-- Negative sampling: uniform random, 4 negatives per 1 positive, re-sampled each epoch
+- Negative sampling: uniform random, 4 negatives per 1 positive, re-sampled each epoch. Log-frequency sampling (popularity-aware) is a deliberate v2 A/B against this baseline — see Future Iterations.
 - Temporal split per user ordered by rating date: train (70%), validation (10%), test (20%)
 - Validation set used for early stopping and hyperparameter tuning
 - Test set held out completely, only used for final model evaluation
@@ -250,26 +250,26 @@ This is a rough ordered guide from EDA to a working local MVP. Steps within a ph
     - Collect all unique genre keys across the corpus
     - Save as an ordered list to `data/processed/genre_vocab.json` — this is the fixed mapping for all genre vectors
 
-11. **Precompute book embeddings** (`scripts/embed.py`)
+11. **Precompute book embeddings** (`scripts/embed.py`) DONE
     - For each book: `text = f"{title}. {description}"`
     - Run through `all-MiniLM-L6-v2` in batches
     - Save as `data/processed/book_embeddings.npy`
     - Save `book_id → row index` mapping as `data/processed/book_id_to_idx.json`
     - *Run on GPU (Kaggle/Colab); upload to HF Hub and reuse*
 
-12. **Build item feature matrix**
+12. **Build item feature matrix** DONE
     - Genre vector: for each book, build count vector over genre vocab, L2-normalize
     - Pages: min-max normalize using 1st–99th percentile of the corpus
     - Save normalization params (min, max) to config/artifacts for inference reuse
 
-13. **Build user features from personal Goodreads CSV**
+13. **Build user features from personal Goodreads CSV** DONE
     - Match your rated books to UCSD `book_id`s
     - Like embedding: rating-weighted mean of embeddings for 4+ star books
     - Dislike embedding: simple mean of embeddings for 1–2 star books
     - Genre distribution: sum genre vectors of 4+ star books, L2-normalize
     - Mean pages: mean of normalized `num_pages` for 4+ star books
 
-14. **Build training pairs**
+14. **Build training pairs** DONE
     - For each user in train split: collect positives (4+) and sample 4× negatives (uniform random from unrated books)
     - Re-sample negatives each epoch during training (don't precompute a static negative set)
     - Exclude 3-star and 0-star rated books from negative pool for that user
