@@ -31,7 +31,7 @@ class TrainingPairsDataset(Dataset):
             book_id_to_index = json.load(f)
 
         interactions = (
-            pl.scan_parquet(DATA_DIR / "transformed" / "books_with_interactions.parquet")
+            pl.scan_parquet(DATA_DIR / "transformed" / "training_interactions.parquet")
             .filter(pl.col("data_split") == data_split)
             .select("user_id", "book_id", "rating")
             .collect()
