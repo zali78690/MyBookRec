@@ -17,7 +17,6 @@ import time
 
 import numpy as np
 import polars as pl
-import torch
 from torch.utils.data import Dataset
 
 from mybookrec import DATA_DIR
@@ -94,10 +93,10 @@ class TrainingPairsDataset(Dataset):
         self.n_negatives = n_negatives
         self.rng = np.random.default_rng(rng_seed)
         self.negative_sampling = negative_sampling
-        self.neg_sampling_probs: torch.Tensor | None = None
+        self.neg_sampling_cdf: np.ndarray | None = None
 
         if negative_sampling == "log_freq":
-            log(f"[TrainingPairsDataset/{data_split}] computing log-frequency sampling distribution... ({time.time()-t0:.1f}s)")
+            log(f"[TrainingPairsDataset/{data_split}] computing log-frequency CDF... ({time.time()-t0:.1f}s)")
             # Count interactions per book across this split. Popular books get higher weight.
             book_counts = np.bincount(
                 interactions["book_idx"].to_numpy().astype(np.int64),
@@ -105,13 +104,17 @@ class TrainingPairsDataset(Dataset):
             )
             # log(count + 1) gives positive weight to every book, even those with 0 interactions
             # (rare but possible if the book is in the catalog but only appears in val/test).
-            weights = np.log1p(book_counts).astype(np.float32)
-            self.neg_sampling_probs = torch.from_numpy(weights / weights.sum())
+            weights = np.log1p(book_counts).astype(np.float64)
+            probs = weights / weights.sum()
+            # Inverse-CDF sampling: precompute the cumulative distribution once, then sample via
+            # uniform-random + binary search. ~100x faster than torch.multinomial for many
+            # small per-call draws (which is exactly the DataLoader hot path).
+            self.neg_sampling_cdf = np.cumsum(probs)
+            self.neg_sampling_cdf[-1] = 1.0  # pin to exactly 1 to absorb floating-point drift
             log(
                 f"[TrainingPairsDataset/{data_split}]   probs: "
-                f"min={self.neg_sampling_probs.min().item():.2e} "
-                f"max={self.neg_sampling_probs.max().item():.2e} "
-                f"ratio_top_to_median={self.neg_sampling_probs.max().item() / self.neg_sampling_probs.median().item():.1f}x "
+                f"min={probs.min():.2e} max={probs.max():.2e} "
+                f"ratio_top_to_median={probs.max() / np.median(probs):.1f}x "
                 f"({time.time()-t0:.1f}s)"
             )
 
@@ -128,8 +131,9 @@ class TrainingPairsDataset(Dataset):
 
     def _draw_candidates(self, k: int) -> np.ndarray:
         if self.negative_sampling == "log_freq":
-            # torch.multinomial samples from the log-freq distribution; convert to numpy for filtering.
-            return torch.multinomial(self.neg_sampling_probs, k, replacement=True).numpy()
+            # Inverse-CDF sampling: draw k uniforms in [0, 1), binary-search the CDF.
+            r = self.rng.random(k)
+            return np.minimum(np.searchsorted(self.neg_sampling_cdf, r), self.n_books - 1)
         return self.rng.integers(0, self.n_books, size=k)
 
     def _sample_negatives(self, user_idx: int) -> np.ndarray:
