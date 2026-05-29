@@ -4,8 +4,11 @@ Emits (user_idx, positive_book_idx, negative_book_indices) per call. Negatives a
 fresh on every __getitem__ — across an epoch, the DataLoader iteration naturally produces
 different negatives for the same positive, so the model can't memorize specific pairings.
 
-The Dataset only emits integer indices. Feature lookup against the precomputed
-user_features / item_features matrices happens in the training loop.
+Supports two negative-sampling distributions:
+- "uniform": every book equally likely. Simplest, weakest baseline.
+- "log_freq": p(book) ∝ log(interaction_count + 1). Popular books appear as negatives more
+  often — this surfaces "hard negatives" (popular books that don't match user taste) so the
+  model learns to discriminate by taste, not popularity.
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ import time
 
 import numpy as np
 import polars as pl
+import torch
 from torch.utils.data import Dataset
 
 from mybookrec import DATA_DIR
@@ -26,9 +30,11 @@ class TrainingPairsDataset(Dataset):
         data_split: str = "train",
         rng_seed: int | None = None,
         verbose: bool = True,
+        negative_sampling: str = "uniform",
     ):
-        # Progress prints keep VS Code / Colab websockets alive — init can take 1-3 min on Colab,
-        # and silent processing causes the connection to time out.
+        if negative_sampling not in ("uniform", "log_freq"):
+            raise ValueError(f"negative_sampling must be 'uniform' or 'log_freq', got {negative_sampling!r}")
+
         def log(msg: str):
             if verbose:
                 print(msg, flush=True)
@@ -50,8 +56,6 @@ class TrainingPairsDataset(Dataset):
         log(f"[TrainingPairsDataset/{data_split}]   loaded {len(interactions):,} rows ({time.time()-t0:.1f}s)")
 
         log(f"[TrainingPairsDataset/{data_split}] mapping ids via polars join... ({time.time()-t0:.1f}s)")
-        # Using native polars joins is ~10x faster than per-row map_elements lambdas:
-        # vectorized hash join in C vs a Python dict lookup per row over ~70M rows.
         user_map = pl.DataFrame({
             "user_id": list(user_id_to_index.keys()),
             "user_idx": list(user_id_to_index.values()),
@@ -89,6 +93,28 @@ class TrainingPairsDataset(Dataset):
         self.n_books = len(book_id_to_index)
         self.n_negatives = n_negatives
         self.rng = np.random.default_rng(rng_seed)
+        self.negative_sampling = negative_sampling
+        self.neg_sampling_probs: torch.Tensor | None = None
+
+        if negative_sampling == "log_freq":
+            log(f"[TrainingPairsDataset/{data_split}] computing log-frequency sampling distribution... ({time.time()-t0:.1f}s)")
+            # Count interactions per book across this split. Popular books get higher weight.
+            book_counts = np.bincount(
+                interactions["book_idx"].to_numpy().astype(np.int64),
+                minlength=self.n_books,
+            )
+            # log(count + 1) gives positive weight to every book, even those with 0 interactions
+            # (rare but possible if the book is in the catalog but only appears in val/test).
+            weights = np.log1p(book_counts).astype(np.float32)
+            self.neg_sampling_probs = torch.from_numpy(weights / weights.sum())
+            log(
+                f"[TrainingPairsDataset/{data_split}]   probs: "
+                f"min={self.neg_sampling_probs.min().item():.2e} "
+                f"max={self.neg_sampling_probs.max().item():.2e} "
+                f"ratio_top_to_median={self.neg_sampling_probs.max().item() / self.neg_sampling_probs.median().item():.1f}x "
+                f"({time.time()-t0:.1f}s)"
+            )
+
         log(f"[TrainingPairsDataset/{data_split}] ready in {time.time()-t0:.1f}s")
 
     def __len__(self) -> int:
@@ -100,13 +126,19 @@ class TrainingPairsDataset(Dataset):
         neg_book_indices = self._sample_negatives(user_idx)
         return user_idx, pos_book_idx, neg_book_indices
 
+    def _draw_candidates(self, k: int) -> np.ndarray:
+        if self.negative_sampling == "log_freq":
+            # torch.multinomial samples from the log-freq distribution; convert to numpy for filtering.
+            return torch.multinomial(self.neg_sampling_probs, k, replacement=True).numpy()
+        return self.rng.integers(0, self.n_books, size=k)
+
     def _sample_negatives(self, user_idx: int) -> np.ndarray:
         excluded = self.exclude.get(user_idx)
-        sampled = self.rng.integers(0, self.n_books, size=self.n_negatives * 2)
+        sampled = self._draw_candidates(self.n_negatives * 2)
         if excluded is not None and len(excluded) > 0:
             sampled = sampled[~np.isin(sampled, excluded)]
         while len(sampled) < self.n_negatives:
-            extra = self.rng.integers(0, self.n_books, size=self.n_negatives)
+            extra = self._draw_candidates(self.n_negatives)
             if excluded is not None and len(excluded) > 0:
                 extra = extra[~np.isin(extra, excluded)]
             sampled = np.concatenate([sampled, extra])
