@@ -23,7 +23,12 @@ import polars as pl
 import torch
 
 from mybookrec import DATA_DIR
-from mybookrec.io import batch_encode, load_checkpoint, load_item_features, personal_user_features_path
+from mybookrec.io.checkpoints import (
+    batch_encode,
+    load_checkpoint,
+    load_item_features,
+    personal_user_features_path,
+)
 
 RED_FLAGS: tuple[tuple[str, list[str]], ...] = (
     ("TWILIGHT (1★ × 5 = strongest negative)", ["twilight", "midnight sun", "breaking dawn", "eclipse"]),

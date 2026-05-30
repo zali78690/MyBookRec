@@ -25,8 +25,9 @@ import numpy as np
 import polars as pl
 
 from mybookrec import ROOT_DIR
-from mybookrec.ingest.author_lookup import AuthorEmbeddingLookup, load_default_lookup
+from mybookrec.ingest.author_lookup import AuthorEmbeddingLookup, compute_batch_author_means, load_default_lookup
 from mybookrec.ingest.schemas import SilverBook
+from mybookrec.io.artifacts import TransformedArtifacts
 from mybookrec.settings import get_settings
 
 
@@ -37,21 +38,6 @@ def load_vocab() -> list[str]:
         The ordered vocab list.
     """
     with open(ROOT_DIR / "mybookrec" / "features" / "genre_vocab.json") as f:
-        return json.load(f)
-
-
-def load_page_norm_params() -> dict[str, float]:
-    """Load the {p1, p99, median} normalisation params for num_pages.
-
-    Returns:
-        Dict with float keys p1, p99, median.
-
-    Raises:
-        FileNotFoundError: If the params file hasn't been produced yet.
-    """
-    settings = get_settings()
-    path = settings.transformed_dir / "num_pages_norm_params.json"
-    with open(path) as f:
         return json.load(f)
 
 
@@ -161,7 +147,7 @@ def build_author_features(
         - (n_books, dim) float32 author-embedding matrix.
         - Provenance counts dict, e.g. {"trained": 12, "batch_mean": 3, "self": 5}.
     """
-    batch_means = lookup.build_batch_means(silver_books, description_embeddings)
+    batch_means = compute_batch_author_means(silver_books, description_embeddings)
     out = np.zeros_like(description_embeddings, dtype=np.float32)
     provenance: dict[str, int] = {"trained": 0, "batch_mean": 0, "self": 0}
     for i, book in enumerate(silver_books):
@@ -198,8 +184,9 @@ def run(
 
     silver = pl.read_parquet(silver_path)
     silver_books = [SilverBook(**row) for row in silver.to_dicts()]
+    artifacts = TransformedArtifacts(settings.transformed_dir)
     vocab = load_vocab()
-    page_params = load_page_norm_params()
+    page_params = artifacts.num_pages_norm_params
 
     embeddings = embed_descriptions(
         silver["title"].to_list(),
@@ -209,7 +196,7 @@ def run(
     item_features = build_features(silver, vocab, page_params, embeddings)
 
     if feature_set == "v4":
-        lookup = load_default_lookup()
+        lookup = load_default_lookup(artifacts=artifacts)
         author_features, provenance = build_author_features(silver_books, embeddings, lookup)
         item_features = np.concatenate([item_features, author_features], axis=1).astype(np.float32)
         total = sum(provenance.values()) or 1

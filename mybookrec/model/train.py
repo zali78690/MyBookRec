@@ -24,14 +24,14 @@ from torch.utils.data import DataLoader
 from mybookrec import DATA_DIR
 from mybookrec.eval.metrics import hit_rate_at_k, ndcg_at_k
 from mybookrec.features.training_pairs import TrainingPairsDataset
-from mybookrec.io import (
+from mybookrec.io.checkpoints import (
     FEATURE_SETS,
     batch_encode,
     detect_available_feature_set,
     load_features_for_checkpoint,
-    sample_test_pairs,
     select_device,
 )
+from mybookrec.io.eval_data import sample_test_pairs
 from mybookrec.model.towers import TwoTowerModel
 from mybookrec.tracking import log_artifact, log_metric, track_run
 

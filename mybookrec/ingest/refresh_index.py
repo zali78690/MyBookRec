@@ -21,32 +21,9 @@ import numpy as np
 import torch
 
 from mybookrec.index.faiss_index import encode_all_items, load_index
-from mybookrec.io import load_checkpoint
+from mybookrec.io.artifacts import TransformedArtifacts
+from mybookrec.io.checkpoints import load_checkpoint
 from mybookrec.settings import get_settings
-
-
-def load_book_id_to_index(path: Path) -> dict[str, int]:
-    """Read the JSON mapping of book_id → integer index.
-
-    Args:
-        path: Path to the book_id_to_index.json file.
-
-    Returns:
-        The mapping dict.
-    """
-    with open(path) as f:
-        return json.load(f)
-
-
-def save_book_id_to_index(mapping: dict[str, int], path: Path) -> None:
-    """Persist the book_id → index mapping back to disk.
-
-    Args:
-        mapping: The mapping to write.
-        path: Output JSON path.
-    """
-    with open(path, "w") as f:
-        json.dump(mapping, f)
 
 
 def filter_new_items(
@@ -73,14 +50,15 @@ def filter_new_items(
 def run(
     index_path: Path,
     checkpoint_path: Path | None = None,
-    book_id_to_index_path: Path | None = None,
+    artifacts: TransformedArtifacts | None = None,
 ) -> int:
     """Append all unseen gold items to the FAISS index and extend the id mapping.
 
     Args:
         index_path: Path to the FAISS index (will be overwritten with the appended version).
         checkpoint_path: Model checkpoint. Defaults to settings.resolved_serve_model_path().
-        book_id_to_index_path: Mapping file. Defaults to data/transformed/book_id_to_index.json.
+        artifacts: TransformedArtifacts source for the book_id mapping (loaded + saved here).
+            Defaults to one bound at settings.transformed_dir.
 
     Returns:
         Number of items appended.
@@ -92,8 +70,8 @@ def run(
     settings = get_settings()
     if checkpoint_path is None:
         checkpoint_path = settings.resolved_serve_model_path()
-    if book_id_to_index_path is None:
-        book_id_to_index_path = settings.transformed_dir / "book_id_to_index.json"
+    if artifacts is None:
+        artifacts = TransformedArtifacts(settings.transformed_dir)
 
     gold_features_path = settings.gold_dir / "item_features.npy"
     gold_ids_path = settings.gold_dir / "book_ids.json"
@@ -104,7 +82,7 @@ def run(
     with open(gold_ids_path) as f:
         gold_ids: list[str] = json.load(f)
 
-    mapping = load_book_id_to_index(book_id_to_index_path)
+    mapping = dict(artifacts.book_id_to_index)
     new_ids, new_features = filter_new_items(gold_ids, gold_features, mapping)
     if not new_ids:
         return 0
@@ -132,6 +110,6 @@ def run(
     for book_id in new_ids:
         mapping[book_id] = next_idx
         next_idx += 1
-    save_book_id_to_index(mapping, book_id_to_index_path)
+    artifacts.save_book_id_to_index(mapping)
 
     return len(new_ids)

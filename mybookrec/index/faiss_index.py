@@ -6,7 +6,7 @@ queries take <10ms. IndexIVFFlat / IndexHNSW becomes worthwhile beyond ~100M ite
 
 Typical usage::
 
-    from mybookrec.io import load_checkpoint, load_item_features
+    from mybookrec.io.checkpoints import load_checkpoint, load_item_features
     from mybookrec.index import build_index, encode_all_items, query
 
     model, config, _ = load_checkpoint("checkpoints/two_tower_v4bce_best.pt")
@@ -26,7 +26,7 @@ import faiss
 import numpy as np
 import torch
 
-from mybookrec.io import batch_encode
+from mybookrec.io.checkpoints import batch_encode
 from mybookrec.model.towers import TwoTowerModel
 
 

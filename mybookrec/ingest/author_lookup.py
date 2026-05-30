@@ -21,14 +21,13 @@ hit rates per source.
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from collections.abc import Sequence
-from pathlib import Path
 
 import numpy as np
 
 from mybookrec.ingest.schemas import SilverBook
+from mybookrec.io.artifacts import TransformedArtifacts
 from mybookrec.settings import get_settings
 
 
@@ -83,47 +82,6 @@ class AuthorEmbeddingLookup:
             return None
         return self.author_embeddings[author_idx]
 
-    @staticmethod
-    def author_key(silver: SilverBook) -> str | None:
-        """Canonical key for grouping ingested books by first-author name.
-
-        Args:
-            silver: A SilverBook.
-
-        Returns:
-            Lowercased stripped first-author name, or None if no authors.
-        """
-        if not silver.authors:
-            return None
-        return silver.authors[0].strip().lower()
-
-    @classmethod
-    def build_batch_means(
-        cls,
-        silver_books: Sequence[SilverBook],
-        description_embeddings: np.ndarray,
-    ) -> dict[str, np.ndarray]:
-        """Group ingested books by first-author name and average their description embeddings.
-
-        Args:
-            silver_books: All silver books in this ingest pass (row-aligned with embeddings).
-            description_embeddings: (n_books, dim) embedding matrix.
-
-        Returns:
-            Dict mapping author_key → mean embedding. Authors with only one book are
-            still included; callers can decide whether to use the single-book mean.
-        """
-        groups: dict[str, list[int]] = defaultdict(list)
-        for i, book in enumerate(silver_books):
-            key = cls.author_key(book)
-            if key:
-                groups[key].append(i)
-        return {
-            key: description_embeddings[rows].mean(axis=0).astype(np.float32)
-            for key, rows in groups.items()
-            if len(rows) >= 2
-        }
-
     def resolve(
         self,
         silver: SilverBook,
@@ -135,7 +93,7 @@ class AuthorEmbeddingLookup:
         Args:
             silver: The book.
             own_description_embedding: This book's description embedding (fallback).
-            batch_means: Output of `build_batch_means` for this ingest pass.
+            batch_means: Output of `compute_batch_author_means` for this ingest pass.
 
         Returns:
             Tuple of ((dim,) float32 embedding, provenance tier in
@@ -144,14 +102,60 @@ class AuthorEmbeddingLookup:
         trained = self.trained_embedding_for(silver.isbn_13)
         if trained is not None:
             return trained, "trained"
-        key = self.author_key(silver)
+        key = author_key(silver)
         if key and key in batch_means:
             return batch_means[key], "batch_mean"
         return own_description_embedding.astype(np.float32), "self"
 
 
-def load_default_lookup() -> AuthorEmbeddingLookup:
+def author_key(silver: SilverBook) -> str | None:
+    """Canonical key for grouping ingested books by first-author name.
+
+    Args:
+        silver: A SilverBook.
+
+    Returns:
+        Lowercased stripped first-author name, or None if no authors.
+    """
+    if not silver.authors:
+        return None
+    return silver.authors[0].strip().lower()
+
+
+def compute_batch_author_means(
+    silver_books: Sequence[SilverBook],
+    description_embeddings: np.ndarray,
+    min_books_per_author: int = 2,
+) -> dict[str, np.ndarray]:
+    """Group ingested books by first-author name and average their description embeddings.
+
+    Args:
+        silver_books: All silver books in this ingest pass (row-aligned with embeddings).
+        description_embeddings: (n_books, dim) embedding matrix.
+        min_books_per_author: Minimum books required to include an author. Default 2 means
+            singletons fall through to the self-fallback at resolve time.
+
+    Returns:
+        Dict mapping author_key → mean embedding. Authors below the threshold are excluded.
+    """
+    groups: dict[str, list[int]] = defaultdict(list)
+    for i, book in enumerate(silver_books):
+        key = author_key(book)
+        if key:
+            groups[key].append(i)
+    return {
+        key: description_embeddings[rows].mean(axis=0).astype(np.float32)
+        for key, rows in groups.items()
+        if len(rows) >= min_books_per_author
+    }
+
+
+def load_default_lookup(artifacts: TransformedArtifacts | None = None) -> AuthorEmbeddingLookup:
     """Build the lookup from the standard `data/transformed/` artifacts.
+
+    Args:
+        artifacts: Source of the trained-author artifacts. Defaults to one bound at
+            settings.transformed_dir.
 
     Returns:
         Ready-to-query AuthorEmbeddingLookup.
@@ -159,37 +163,23 @@ def load_default_lookup() -> AuthorEmbeddingLookup:
     Raises:
         FileNotFoundError: If any required artifact is missing.
     """
-    settings = get_settings()
-    transformed = settings.transformed_dir
-    required = [
+    if artifacts is None:
+        artifacts = TransformedArtifacts(get_settings().transformed_dir)
+    required = (
         "isbn13_to_book_id.json",
         "book_id_to_index.json",
         "book_to_author_idx.npy",
         "author_embeddings.npy",
-    ]
-    for filename in required:
-        if not (transformed / filename).exists():
-            raise FileNotFoundError(
-                f"Missing {filename} in {transformed}. Run `python -m mybookrec.features.build_isbn_index` "
-                f"(for isbn13_to_book_id) or `python -m mybookrec.features.build_author_features` "
-                f"(for the others) first."
-            )
-    return AuthorEmbeddingLookup(
-        isbn13_to_book_id=read_json_file(transformed / "isbn13_to_book_id.json"),
-        book_id_to_index=read_json_file(transformed / "book_id_to_index.json"),
-        book_to_author_idx=np.load(transformed / "book_to_author_idx.npy"),
-        author_embeddings=np.load(transformed / "author_embeddings.npy"),
     )
-
-
-def read_json_file(path: Path) -> dict:
-    """Read a JSON file from disk into a dict.
-
-    Args:
-        path: Path to the JSON file.
-
-    Returns:
-        Parsed JSON content.
-    """
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    missing = [name for name in required if not artifacts.path(name).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"Missing {missing} in {artifacts.base_dir}. Run `python -m mybookrec.features.build_isbn_index` "
+            f"and/or `python -m mybookrec.features.build_author_features` first."
+        )
+    return AuthorEmbeddingLookup(
+        isbn13_to_book_id=artifacts.isbn13_to_book_id,
+        book_id_to_index=artifacts.book_id_to_index,
+        book_to_author_idx=artifacts.book_to_author_idx,
+        author_embeddings=artifacts.author_embeddings,
+    )

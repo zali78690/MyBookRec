@@ -18,7 +18,6 @@ If --index isn't provided, the index is built on the fly (~2s on MPS).
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import time
 from pathlib import Path
@@ -33,7 +32,8 @@ import torch
 
 from mybookrec import DATA_DIR
 from mybookrec.index import build_index, encode_all_items, load_index, query
-from mybookrec.io import load_checkpoint, load_item_features, personal_user_features_path
+from mybookrec.io.artifacts import TransformedArtifacts
+from mybookrec.io.checkpoints import load_checkpoint, load_item_features, personal_user_features_path
 from mybookrec.model.towers import TwoTowerModel
 
 
@@ -166,23 +166,15 @@ def main() -> None:
     scores = scores_arr[0].tolist()
     indices = indices_arr[0].tolist()
 
-    transformed = DATA_DIR / "transformed"
-    with open(transformed / "book_id_to_index.json") as f:
-        book_id_to_index = json.load(f)
-    index_to_book_id = {v: k for k, v in book_id_to_index.items()}
-    candidate_ids = [index_to_book_id[i] for i in indices]
+    artifacts = TransformedArtifacts(DATA_DIR / "transformed")
+    candidate_ids = [artifacts.index_to_book_id[i] for i in indices]
 
-    meta = (
-        pl.scan_parquet(transformed / "books_with_genres.parquet")
-        .select("book_id", "title", "num_pages", "average_rating", "is_ebook", "genres")
-        .filter(pl.col("book_id").is_in(candidate_ids))
-        .collect()
-    )
+    meta = artifacts.books_meta.filter(pl.col("book_id").is_in(candidate_ids))
     meta_dict = {row["book_id"]: row for row in meta.to_dicts()}
 
     excluded: set[str] = set()
     if args.exclude_rated:
-        my_books = pl.read_csv(transformed / "my_books.csv")
+        my_books = pl.read_csv(artifacts.path("my_books.csv"))
         excluded = {str(bid) for bid in my_books["book_id"].to_list()}
 
     filtered = apply_filters(

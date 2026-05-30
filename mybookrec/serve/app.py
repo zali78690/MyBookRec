@@ -20,15 +20,13 @@ from contextlib import asynccontextmanager
 # macOS libomp conflict between FAISS and PyTorch — documented workaround.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-import json
-
 import numpy as np
-import polars as pl
 import torch
 from fastapi import FastAPI, HTTPException
 
 from mybookrec.index import build_index, encode_all_items, load_index, query
-from mybookrec.io import load_checkpoint, load_item_features
+from mybookrec.io.artifacts import TransformedArtifacts
+from mybookrec.io.checkpoints import load_checkpoint, load_item_features
 from mybookrec.serve.schemas import (
     HealthResponse,
     RecommendationItem,
@@ -37,19 +35,6 @@ from mybookrec.serve.schemas import (
 )
 from mybookrec.serve.user_features import compute_user_features_from_ratings
 from mybookrec.settings import get_settings
-
-
-def load_book_id_to_index(transformed_dir) -> dict[str, int]:
-    """Load the UCSD book_id → row index mapping from disk.
-
-    Args:
-        transformed_dir: Path to the data/transformed directory.
-
-    Returns:
-        Dict mapping string book_id to integer row index.
-    """
-    with open(transformed_dir / "book_id_to_index.json") as f:
-        return json.load(f)
 
 
 def flatten_genres_struct(genres_struct: dict | None) -> list[str]:
@@ -70,25 +55,21 @@ def flatten_genres_struct(genres_struct: dict | None) -> list[str]:
     return [name for name, _ in present]
 
 
-def load_meta_dict(transformed_dir) -> dict[str, dict]:
-    """Load the per-book metadata used for post-rank filtering and response rendering.
+def build_meta_dict(artifacts: TransformedArtifacts) -> dict[str, dict]:
+    """Materialise the per-book metadata used for post-rank filtering and response rendering.
 
     The on-disk `genres` column is a struct of `{category: count}`. We flatten it here so
     response rendering doesn't need to know the on-disk schema.
 
     Args:
-        transformed_dir: Path to the data/transformed directory.
+        artifacts: Source of the books metadata parquet.
 
     Returns:
         Dict mapping book_id → row dict with title, num_pages, average_rating,
         is_ebook, genres (list[str]).
     """
-    df = pl.read_parquet(
-        transformed_dir / "books_with_genres.parquet",
-        columns=["book_id", "title", "num_pages", "average_rating", "is_ebook", "genres"],
-    )
     meta: dict[str, dict] = {}
-    for row in df.to_dicts():
+    for row in artifacts.books_meta.to_dicts():
         row["genres"] = flatten_genres_struct(row.get("genres"))
         meta[str(row["book_id"])] = row
     return meta
@@ -134,24 +115,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     model, config, _ = load_checkpoint(model_path)
     device = next(model.parameters()).device.type
 
-    transformed_dir = settings.transformed_dir
+    artifacts = TransformedArtifacts(settings.transformed_dir)
     index = build_or_load_index(model, config, device, settings.serve_index_path)
-    book_id_to_index = load_book_id_to_index(transformed_dir)
-    index_to_book_id = {v: k for k, v in book_id_to_index.items()}
-    meta_dict = load_meta_dict(transformed_dir)
-    book_embeddings = np.load(transformed_dir / "book_embeddings.npy")
-    genre_matrix = np.load(transformed_dir / "genre_matrix.npy")
-    pages_vec = np.load(transformed_dir / "num_pages_normalized.npy")
 
     app.state.model = model
     app.state.device = device
     app.state.index = index
-    app.state.book_id_to_index = book_id_to_index
-    app.state.index_to_book_id = index_to_book_id
-    app.state.meta_dict = meta_dict
-    app.state.book_embeddings = book_embeddings
-    app.state.genre_matrix = genre_matrix
-    app.state.pages_vec = pages_vec
+    app.state.book_id_to_index = artifacts.book_id_to_index
+    app.state.index_to_book_id = artifacts.index_to_book_id
+    app.state.meta_dict = build_meta_dict(artifacts)
+    app.state.book_embeddings = artifacts.book_embeddings
+    app.state.genre_matrix = artifacts.genre_matrix
+    app.state.pages_vec = artifacts.num_pages_normalized
     app.state.model_version = model_path.name
     yield
 

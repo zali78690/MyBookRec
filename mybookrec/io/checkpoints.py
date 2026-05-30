@@ -1,28 +1,30 @@
-"""Shared IO helpers for the CLI scripts.
+"""Feature-set registry + checkpoint / feature-matrix loaders.
 
-The split between this module and `mybookrec.features.*` is deliberate:
-this is a thin runtime IO layer the CLIs share at inference/training time
-(loading checkpoints, feature matrices, id mappings). The `features` package
-contains the offline data-pipeline code that *produces* those artifacts.
+This module owns:
+
+- The named `FeatureSet` registry (v1, v4, …). Adding a new feature set is one
+  entry here; downstream loaders auto-detect by `item_input_dim`.
+- Loading a trained `TwoTowerModel` from disk in eval mode.
+- Loading the on-disk feature matrices (item + bulk-user) that match a given
+  checkpoint's input dims.
+- A batched encoder used by FAISS index build, evaluation, and serving.
+
+Everything here is **production-runtime** code — no eval-only sampling helpers
+live here (see `eval_data.py` for those).
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
-import polars as pl
 import torch
 
 from mybookrec import DATA_DIR
 from mybookrec.model.towers import TwoTowerModel
 
 
-# Feature-set registry — single source of truth for "given a checkpoint's
-# input dims, which on-disk files match?". Adding a new feature set means
-# adding one entry here instead of touching every loader.
 class FeatureSet:
     """One named feature set: dims + the on-disk filenames they live in."""
 
@@ -41,11 +43,11 @@ class FeatureSet:
             name: Human-readable identifier (e.g. "v1", "v4").
             user_input_dim: Dimensionality of the user feature vector.
             item_input_dim: Dimensionality of the item feature vector.
-            bulk_user_npy: Filename under data/transformed/ for the
-                full user matrix used during training.
+            bulk_user_npy: Filename under data/transformed/ for the full user
+                matrix used during training.
             personal_user_npy: Filename for the single-row personal user vector.
-            item_files: One or more filenames whose concatenation produces
-                the item feature matrix.
+            item_files: One or more filenames whose concatenation produces the
+                item feature matrix.
         """
         self.name = name
         self.user_input_dim = user_input_dim
@@ -245,101 +247,3 @@ def batch_encode(
     """
     chunks = [encoder(features[i : i + batch_size]) for i in range(0, features.shape[0], batch_size)]
     return torch.cat(chunks, dim=0)
-
-
-def load_id_mappings() -> tuple[dict[str, int], dict[str, int]]:
-    """Load the user-id and book-id → integer-index JSON mappings.
-
-    Returns:
-        Tuple of (user_id_to_index, book_id_to_index).
-    """
-    transformed = DATA_DIR / "transformed"
-    with open(transformed / "user_id_to_index.json") as f:
-        user_id_to_index = json.load(f)
-    with open(transformed / "book_id_to_index.json") as f:
-        book_id_to_index = json.load(f)
-    return user_id_to_index, book_id_to_index
-
-
-def id_map_df(mapping: dict[str, int], id_col: str, idx_col: str) -> pl.DataFrame:
-    """Materialize an id-to-index dict as a typed polars DataFrame for join use.
-
-    Args:
-        mapping: dict of {string id: integer index}.
-        id_col: Name of the id column.
-        idx_col: Name of the index column.
-
-    Returns:
-        Polars DataFrame with one row per mapping entry.
-    """
-    return pl.DataFrame(
-        {id_col: list(mapping.keys()), idx_col: list(mapping.values())},
-        schema={id_col: pl.String, idx_col: pl.Int64},
-    )
-
-
-def load_split_interactions(
-    data_split: str,
-    user_id_to_index: dict[str, int] | None = None,
-    book_id_to_index: dict[str, int] | None = None,
-    min_rating: int | None = None,
-) -> pl.DataFrame:
-    """Load a slice of training_interactions joined onto integer indices.
-
-    Args:
-        data_split: One of "train", "validation", "test".
-        user_id_to_index: Optional pre-loaded user mapping. Loaded from disk if None.
-        book_id_to_index: Optional pre-loaded book mapping. Loaded from disk if None.
-        min_rating: If set, keep only rows with rating >= this value.
-
-    Returns:
-        Polars DataFrame with columns user_id, book_id, rating, user_idx, book_idx.
-    """
-    if user_id_to_index is None or book_id_to_index is None:
-        user_id_to_index, book_id_to_index = load_id_mappings()
-
-    user_map = id_map_df(user_id_to_index, "user_id", "user_idx")
-    book_map = id_map_df(book_id_to_index, "book_id", "book_idx")
-
-    q = (
-        pl.scan_parquet(DATA_DIR / "transformed" / "training_interactions.parquet")
-        .filter(pl.col("data_split") == data_split)
-        .select("user_id", "book_id", "rating")
-        .with_columns(pl.col("book_id").cast(pl.String))
-        .join(user_map.lazy(), on="user_id", how="left")
-        .join(book_map.lazy(), on="book_id", how="left")
-        .filter(pl.col("user_idx").is_not_null() & pl.col("book_idx").is_not_null())
-    )
-    if min_rating is not None:
-        q = q.filter(pl.col("rating") >= min_rating)
-    return q.collect()
-
-
-def build_train_exclude() -> dict[int, np.ndarray]:
-    """Map each user to the set of book indices they rated in the train split.
-
-    Used at eval time to mask already-rated books from candidate recommendations.
-
-    Returns:
-        Dict from user_idx to a numpy int64 array of book indices.
-    """
-    train_df = load_split_interactions("train")
-    grouped = train_df.group_by("user_idx").agg(pl.col("book_idx").alias("rated_books"))
-    return {row["user_idx"]: np.array(row["rated_books"], dtype=np.int64) for row in grouped.to_dicts()}
-
-
-def sample_test_pairs(n_pairs: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
-    """Sample held-out test (user_idx, positive_book_idx) pairs.
-
-    Args:
-        n_pairs: How many pairs to sample (or all if fewer exist).
-        seed: RNG seed for reproducibility.
-
-    Returns:
-        Tuple of (user_idxs, book_idxs) numpy arrays.
-    """
-    test_df = load_split_interactions("test", min_rating=4)
-    rng = np.random.default_rng(seed)
-    indices = rng.choice(len(test_df), size=min(n_pairs, len(test_df)), replace=False)
-    sample = test_df[indices]
-    return sample["user_idx"].to_numpy(), sample["book_idx"].to_numpy()

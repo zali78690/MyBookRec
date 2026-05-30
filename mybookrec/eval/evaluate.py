@@ -16,13 +16,12 @@ from pathlib import Path
 import torch
 
 from mybookrec.eval.metrics import hit_rate_at_k, ndcg_at_k
-from mybookrec.io import (
+from mybookrec.io.checkpoints import (
     batch_encode,
-    build_train_exclude,
     load_checkpoint,
     load_features_for_checkpoint,
-    sample_test_pairs,
 )
+from mybookrec.io.eval_data import build_train_exclude, sample_test_pairs
 
 
 def parse_args() -> argparse.Namespace:

@@ -17,7 +17,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from mybookrec import DATA_DIR
 from mybookrec.index import build_index, encode_all_items
-from mybookrec.io import load_checkpoint, load_item_features
+from mybookrec.io.checkpoints import load_checkpoint, load_item_features
 
 
 def parse_args() -> argparse.Namespace:
