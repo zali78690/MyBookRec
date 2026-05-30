@@ -76,15 +76,15 @@ def cmd_gold(args: argparse.Namespace) -> None:
     """Embed silver descriptions and build feature vectors."""
     from mybookrec.ingest import to_gold  # local import: torch is heavy
 
-    out_path, n = to_gold.run(model_name=args.model)
-    print(f"[gold] {n:,} books with embeddings → {out_path}")
+    out_path, n = to_gold.run(model_name=args.model, feature_set=args.feature_set)
+    print(f"[gold/{args.feature_set}] {n:,} books with embeddings → {out_path}")
 
 
 def cmd_refresh(args: argparse.Namespace) -> None:
     """Add new gold items to the live FAISS index."""
     from mybookrec.ingest import refresh_index
 
-    added = refresh_index.run(index_path=args.index)
+    added = refresh_index.run(index_path=args.index, checkpoint_path=args.checkpoint)
     print(f"[refresh] +{added:,} items into {args.index}")
 
 
@@ -104,15 +104,31 @@ def parse_args() -> argparse.Namespace:
     p_fetch.set_defaults(func=cmd_fetch)
 
     p_silver = sub.add_parser("silver", help="Bronze → silver: parse, dedupe, write parquet.")
-    p_silver.add_argument("--source", choices=["openlibrary", "google_books", "both"], default="both")
+    p_silver.add_argument(
+        "--source",
+        choices=["openlibrary", "openlibrary_dump", "google_books", "both"],
+        default="both",
+    )
     p_silver.set_defaults(func=cmd_silver)
 
     p_gold = sub.add_parser("gold", help="Silver → gold: embeddings + feature vectors.")
     p_gold.add_argument("--model", default=None, help="HF model id (default: settings.embed_model_name).")
+    p_gold.add_argument(
+        "--feature-set",
+        choices=["v1", "v4"],
+        default="v1",
+        help="v1=395-dim (emb+genre+pages); v4=779-dim (v1 + author emb via ISBN/batch/self fallback).",
+    )
     p_gold.set_defaults(func=cmd_gold)
 
     p_refresh = sub.add_parser("refresh", help="Append new gold embeddings to a FAISS index.")
     p_refresh.add_argument("--index", type=Path, required=True)
+    p_refresh.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="Checkpoint to encode new items through (defaults to settings.resolved_serve_model_path()).",
+    )
     p_refresh.set_defaults(func=cmd_refresh)
 
     return parser.parse_args()

@@ -25,6 +25,8 @@ import numpy as np
 import polars as pl
 
 from mybookrec import ROOT_DIR
+from mybookrec.ingest.author_lookup import AuthorEmbeddingLookup, load_default_lookup
+from mybookrec.ingest.schemas import SilverBook
 from mybookrec.settings import get_settings
 
 
@@ -120,7 +122,7 @@ def build_features(
     page_params: dict[str, float],
     embeddings: np.ndarray,
 ) -> np.ndarray:
-    """Concatenate description embeddings + genre vector + normalised pages.
+    """Concatenate description embeddings + genre vector + normalised pages (v1 schema).
 
     Args:
         silver: Silver parquet (one row per book).
@@ -142,16 +144,52 @@ def build_features(
     return np.concatenate([embeddings, genre_matrix, pages_vec], axis=1)
 
 
-def run(model_name: str | None = None, silver_path: Path | None = None) -> tuple[Path, int]:
+def build_author_features(
+    silver_books: list[SilverBook],
+    description_embeddings: np.ndarray,
+    lookup: AuthorEmbeddingLookup,
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Resolve a per-book author embedding via the trained / batch-mean / self fallback chain.
+
+    Args:
+        silver_books: Row-aligned list of SilverBook records.
+        description_embeddings: (n_books, dim) description embeddings.
+        lookup: Initialised AuthorEmbeddingLookup.
+
+    Returns:
+        Tuple of:
+        - (n_books, dim) float32 author-embedding matrix.
+        - Provenance counts dict, e.g. {"trained": 12, "batch_mean": 3, "self": 5}.
+    """
+    batch_means = lookup.build_batch_means(silver_books, description_embeddings)
+    out = np.zeros_like(description_embeddings, dtype=np.float32)
+    provenance: dict[str, int] = {"trained": 0, "batch_mean": 0, "self": 0}
+    for i, book in enumerate(silver_books):
+        emb, source = lookup.resolve(book, description_embeddings[i], batch_means)
+        out[i] = emb
+        provenance[source] += 1
+    return out, provenance
+
+
+def run(
+    model_name: str | None = None,
+    silver_path: Path | None = None,
+    feature_set: str = "v1",
+) -> tuple[Path, int]:
     """Read silver parquet → write gold metadata + embeddings + features.
 
     Args:
         model_name: HF model id; defaults to settings.embed_model_name.
         silver_path: Source silver parquet; defaults to settings.silver_dir / books.parquet.
+        feature_set: "v1" (395-dim: emb+genre+pages) or "v4" (779-dim: v1 + author emb).
+            v4 requires the trained author artifacts plus `isbn13_to_book_id.json`.
 
     Returns:
         Tuple of (path to gold/books.parquet, number of books written).
     """
+    if feature_set not in ("v1", "v4"):
+        raise ValueError(f"feature_set must be 'v1' or 'v4', got {feature_set!r}")
+
     settings = get_settings()
     if model_name is None:
         model_name = settings.embed_model_name
@@ -159,6 +197,7 @@ def run(model_name: str | None = None, silver_path: Path | None = None) -> tuple
         silver_path = settings.silver_dir / "books.parquet"
 
     silver = pl.read_parquet(silver_path)
+    silver_books = [SilverBook(**row) for row in silver.to_dicts()]
     vocab = load_vocab()
     page_params = load_page_norm_params()
 
@@ -168,6 +207,14 @@ def run(model_name: str | None = None, silver_path: Path | None = None) -> tuple
         model_name,
     )
     item_features = build_features(silver, vocab, page_params, embeddings)
+
+    if feature_set == "v4":
+        lookup = load_default_lookup()
+        author_features, provenance = build_author_features(silver_books, embeddings, lookup)
+        item_features = np.concatenate([item_features, author_features], axis=1).astype(np.float32)
+        total = sum(provenance.values()) or 1
+        breakdown = ", ".join(f"{src}={n} ({100 * n / total:.0f}%)" for src, n in provenance.items())
+        print(f"[gold/v4] author embedding provenance: {breakdown}")
 
     settings.gold_dir.mkdir(parents=True, exist_ok=True)
     out_books = settings.gold_dir / "books.parquet"
