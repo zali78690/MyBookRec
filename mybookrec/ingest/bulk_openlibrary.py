@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     """Parse CLI args.
 
     Returns:
-        argparse.Namespace with input/url + limit + shard-size + dest-tag.
+        argparse.Namespace with input/url + limit + shard-size + dest-tag + year filter.
     """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", type=Path, default=None, help="Local .txt.gz dump file (preferred if available).")
@@ -66,6 +66,13 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Subdirectory name under bronze/openlibrary_dump/ (defaults to today's YYYY-MM).",
+    )
+    parser.add_argument(
+        "--min-year",
+        type=int,
+        default=None,
+        help="Only keep works with first_publish_date year ≥ this value. UCSD's scrape ends ~2017; "
+        "set --min-year 2018 to supplement with newer books only.",
     )
     return parser.parse_args()
 
@@ -152,11 +159,15 @@ def parse_dump_line(line: bytes) -> dict[str, Any] | None:
         return None
 
 
-def is_keepable_work(record: dict[str, Any]) -> bool:
+def is_keepable_work(record: dict[str, Any], min_year: int | None = None) -> bool:
     """Coarse filter: keep works with a title + at least one subject + a description.
+
+    Optionally also gate on `first_publish_date`'s year, so we can supplement the
+    UCSD catalog with only post-2017 books instead of duplicating the existing data.
 
     Args:
         record: One parsed work record.
+        min_year: If set, drop records whose `first_publish_date` year is before this.
 
     Returns:
         True if worth keeping for downstream silver processing.
@@ -165,7 +176,37 @@ def is_keepable_work(record: dict[str, Any]) -> bool:
         return False
     if not record.get("subjects"):
         return False
-    return bool(record.get("description"))
+    if not record.get("description"):
+        return False
+    if min_year is not None:
+        year = extract_first_publish_year(record.get("first_publish_date"))
+        if year is None or year < min_year:
+            return False
+    return True
+
+
+def extract_first_publish_year(value: object) -> int | None:
+    """Pull a 4-digit year out of a free-text `first_publish_date` field.
+
+    OL records publish dates as strings of variable shape: "2019", "2019-03",
+    "2019-03-15", "March 2019", etc. We look for the first 4-digit run that
+    plausibly is a year (1500-2099) and return it.
+
+    Args:
+        value: The raw `first_publish_date` value, or any other type.
+
+    Returns:
+        Year as int, or None if no plausible year is found.
+    """
+    if not isinstance(value, str):
+        return None
+    import re
+
+    for match in re.finditer(r"\b(\d{4})\b", value):
+        year = int(match.group(1))
+        if 1500 <= year <= 2099:
+            return year
+    return None
 
 
 def write_manifest(
@@ -211,6 +252,7 @@ def run(
     limit: int | None,
     shard_size: int,
     tag: str | None,
+    min_year: int | None = None,
 ) -> tuple[Path, int]:
     """Stream the dump into sharded bronze JSONL + a manifest.
 
@@ -220,6 +262,8 @@ def run(
         limit: Stop after this many kept records (None = no limit).
         shard_size: Records per output shard.
         tag: Subdirectory tag under bronze/openlibrary_dump/.
+        min_year: If set, drop records whose first publish year is earlier
+            (used to supplement UCSD's ~2017 cutoff with newer books only).
 
     Returns:
         Tuple of (output_directory, total_records_kept).
@@ -230,7 +274,7 @@ def run(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     source = str(input_path) if input_path else url
-    print(f"[bulk] source={source}  out={out_dir}  shard_size={shard_size:,}  limit={limit}")
+    print(f"[bulk] source={source}  out={out_dir}  shard_size={shard_size:,}  limit={limit}  min_year={min_year}")
 
     t_start = time.time()
     n_scanned = 0
@@ -242,7 +286,7 @@ def run(
         for line in iter_dump_lines(input_path, url, timeout=settings.ingest_request_timeout_sec * 30):
             n_scanned += 1
             record = parse_dump_line(line)
-            if record is None or not is_keepable_work(record):
+            if record is None or not is_keepable_work(record, min_year=min_year):
                 continue
 
             if shard_file is None or (n_kept and n_kept % shard_size == 0):
@@ -352,6 +396,7 @@ def main() -> None:
         limit=args.limit,
         shard_size=args.shard_size,
         tag=args.tag,
+        min_year=args.min_year,
     )
 
 

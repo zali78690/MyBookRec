@@ -48,6 +48,27 @@ def test_is_keepable_work_requires_title_subjects_description() -> None:
     assert bulk_openlibrary.is_keepable_work({"title": "T", "subjects": ["A"]}) is False
 
 
+def test_is_keepable_work_respects_min_year() -> None:
+    """Expected use: min_year drops records published before the cutoff."""
+    base = {"title": "T", "subjects": ["A"], "description": "D"}
+    assert bulk_openlibrary.is_keepable_work({**base, "first_publish_date": "2020"}, min_year=2018) is True
+    assert bulk_openlibrary.is_keepable_work({**base, "first_publish_date": "2015"}, min_year=2018) is False
+    # Records with no parseable year fail closed when min_year is set.
+    assert bulk_openlibrary.is_keepable_work(base, min_year=2018) is False
+
+
+def test_extract_first_publish_year_handles_variable_formats() -> None:
+    """Edge case: dates arrive in many shapes; we want a year out of each plausible one."""
+    assert bulk_openlibrary.extract_first_publish_year("2020") == 2020
+    assert bulk_openlibrary.extract_first_publish_year("2020-03-15") == 2020
+    assert bulk_openlibrary.extract_first_publish_year("March 2020") == 2020
+    assert bulk_openlibrary.extract_first_publish_year("Spring 2020") == 2020
+    assert bulk_openlibrary.extract_first_publish_year(None) is None
+    assert bulk_openlibrary.extract_first_publish_year("no year here") is None
+    # Implausible years are rejected.
+    assert bulk_openlibrary.extract_first_publish_year("9999-01-01") is None
+
+
 def test_adapt_work_extracts_author_keys_as_grouping_ids() -> None:
     """Expected use: dump's author key (e.g. OL26320A) becomes the SilverBook authors[0]."""
     record = {
