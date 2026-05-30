@@ -48,6 +48,20 @@ class Settings(BaseSettings):
         description="HF model id for description embeddings. Swap to all-mpnet-base-v2 (768-dim) when ready.",
     )
 
+    # ----- experiment tracking (MLflow) -----
+    mlflow_tracking_uri: str = Field(
+        default=f"sqlite:///{REPO_ROOT}/mlruns.db",
+        description="MLflow backend store URI. SQLite file by default; swap to http://... for a remote server.",
+    )
+    mlflow_artifact_root: pathlib.Path = Field(
+        default=REPO_ROOT / "mlruns",
+        description="Where MLflow writes run artifacts (checkpoints, logs).",
+    )
+    mlflow_experiment_name: str = Field(
+        default="two_tower",
+        description="Default experiment name for training runs.",
+    )
+
     # ----- ingestion APIs -----
     google_books_api_key: str | None = Field(
         default=None,

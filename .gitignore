@@ -4,3 +4,8 @@ __pycache__
 checkpoints/
 
 data/
+
+# MLflow runtime artifacts
+mlruns/
+mlruns.db
+mlruns.db-journal
