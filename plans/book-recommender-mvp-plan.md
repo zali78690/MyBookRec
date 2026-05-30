@@ -14,9 +14,16 @@ A two-tower neural recommender trained on UCSD Goodreads. Encodes users and book
 | Eval metrics (HR@K, NDCG@K) | ✅ |
 | FAISS retrieval + recommendation CLI | ✅ |
 | Vibe-check diagnostics | ✅ |
+| Pydantic Settings + `.env` config layer | ✅ |
+| Ingestion: Open Library + Google Books → bronze → silver → gold → FAISS refresh | ✅ |
+| FastAPI service (`/healthz`, `/recommend`) | ✅ |
+| Lean multi-stage Docker image + compose | ✅ |
+| DVC init + local remote + `dvc.yaml` pipeline | ✅ |
+| Unit tests (settings, ingest, serve) — 56 passing | ✅ |
 | InfoNCE loss + cross-encoder | ⚠️ built, didn't beat v1 in budget |
 | MPNet 768-dim embeddings | ⏳ Colab compute pending |
 | HF Hub artifact upload | ⏳ |
+| Hamilton DAG refactor | ⏸️ deferred — `dvc.yaml` covers the DAG need at this scale |
 
 **Best model: `checkpoints/two_tower_mac.pt` (v1)** — BCE + uniform sampling, ~56k batches on MPS. HR@10=0.0100, NDCG@10=0.0043 on 5,000 test pairs (rng=0).
 
@@ -113,6 +120,74 @@ Full details: [v3-overhaul-results.md](v3-overhaul-results.md).
 1. Re-train v4-BCE with full ~60-min MPS budget that v1 got — most likely path to beat HR@10=0.0100.
 2. HF Hub upload (model + features + FAISS index + mappings + vocab).
 3. Cloud training notebook for Colab T4 fallback.
+
+## End-to-end pipeline (built this iteration)
+
+The serving + ingestion stack is real-time-capable but trains in batch. Three concerns
+are kept separate:
+
+| Concern | Cadence | Real-time? |
+|---|---|---|
+| Model training | Weekly / monthly on Colab | No — offline |
+| Item index refresh | On new-book ingest (`refresh_index.add`) | Incremental, no rebuild |
+| User scoring (`POST /recommend`) | Per request, <500 ms wall-clock today | Yes — features built from request body |
+
+### Ingestion (medallion)
+
+```
+APIs (Open Library, Google Books)
+  → mybookrec.ingest.cli fetch   → data/bronze/<source>/<date>/<query>.jsonl  (immutable)
+  → mybookrec.ingest.cli silver  → data/silver/books.parquet                  (cleaned, deduped)
+  → mybookrec.ingest.cli gold    → data/gold/{books.parquet, embeddings.npy,
+                                                item_features.npy, book_ids.json}
+  → mybookrec.ingest.cli refresh → appends embeddings to checkpoints/*.faiss + extends mapping
+```
+
+`SilverBook` Pydantic schema is source-agnostic — both APIs feed into the same
+downstream code. Dedup prefers ISBN-13, falls back to `title|first-author`, tie-breaks
+on richer source (Open Library wins on equal `ratings_count`).
+
+Open Library: no key needed. Google Books: free 1k req/day; key from
+`GOOGLE_BOOKS_API_KEY` in `.env`.
+
+### Config
+
+All runtime knobs live in `mybookrec.settings.Settings` (Pydantic). Order of
+precedence: env vars → `.env` → defaults. Never reach into `os.environ` from
+application code; always go through `get_settings()`. See `.env.example`.
+
+### Serving
+
+`mybookrec.serve` is a FastAPI app loading model + FAISS + lookup tables once at
+startup via the lifespan context manager. Endpoints:
+
+- `GET /healthz` — readiness probe.
+- `POST /recommend` — body `{ratings: [{book_id, rating}], top_k, min_avg_rating?, ebook_only?}`.
+
+Run locally: `python -m mybookrec.serve`. Containerised: `docker compose up --build`.
+Image is multi-stage (uv-based builder → slim runtime), runs as non-root, ~250 MB.
+
+### Data versioning (DVC)
+
+`dvc init` is wired with a local remote at `/Users/zain/mybookrec-dvc-store`.
+`dvc.yaml` describes every feature-build stage with inputs + outputs so DVC can
+detect what's stale and rebuild only the changed leaves.
+
+Swap to S3/R2 by editing `.dvc/config`; nothing else changes.
+
+### Testing
+
+`tests/` mirrors the package layout. 56 tests covering settings, every ingest
+module (schemas, language map, http client, openlibrary, google_books, to_silver,
+to_gold), and the FastAPI helpers. Run with `python -m pytest tests/ -q`.
+
+### Why no Hamilton
+
+I considered Hamilton for the feature pipeline DAG. `dvc.yaml` already provides
+change detection + reproducible execution at the script level, and the feature
+modules are small enough that function-level DAG wiring would add more code than
+it removes. Reopen if the pipeline grows beyond ~8 stages or function-level reuse
+becomes a real need.
 
 ## Deferred (post-MVP)
 
