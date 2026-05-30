@@ -1,374 +1,276 @@
-# MyBookRec MVP - Product Requirements Document
+# MyBookRec — Implementation Plan and Current Status
 
-## Problem Statement
+## Problem statement
 
-Goodreads recommendations are generic and don't account for individual taste nuance. As someone who actively rates and shelves books, I want a recommendation system that learns from my specific patterns — what genres I gravitate toward, what book lengths I prefer, what content resonates — and surfaces books I'd actually enjoy, not just popular titles in broad categories.
+Goodreads recommendations are popularity-driven. As an active rater/shelver I want a system that learns *my* taste — what genres, lengths, prose styles I gravitate toward — and surfaces books I'd actually enjoy, not just what's trending.
 
-Goodreads uses collaborative filtering — "users who rated the same books as you also liked these other books." It finds similar users and surfaces what they read.
+Goodreads uses pure collaborative filtering ("users who rated the same books as you also liked these"). It can't recommend a new niche book that no similar user has rated yet.
 
-This system is content + behavior hybrid:        
-  - It understands what a book is about (via description embeddings, genre vectors)
-  - It learns your taste profile from your behavior
-  - It can recommend books with zero ratings from  similar users — as long as the content matches your learned taste
-
-Concrete difference: if a niche book was just published and no one similar to you has rated it, Goodreads can't recommend it. Your model can,because it reasons about content, not just    co-occurrence.
+This system is **content + behavior hybrid**:
+- It understands what a book *is about* (description embeddings, genre, author).
+- It learns *your* taste profile from your rating behavior.
+- It can recommend books with zero ratings from similar users, as long as the content matches your learned taste.
 
 ## Solution
 
-A two-tower neural network recommendation system trained on the UCSD Goodreads dataset that generates personalized book recommendations based on a user's rating history. The MVP is profile-based: given a user's reading history, produce a ranked list of books they're likely to enjoy.
-
-The system encodes users and books into a shared embedding space where proximity indicates relevance. At inference time, the user's embedding is compared against all book embeddings via FAISS to retrieve top-K recommendations.
-
-## User Stories
-
-1. As a reader, I want to load my Goodreads export CSV so that the system knows what I've read and how I rated it.
-2. As a reader, I want to receive a ranked list of book recommendations based on my rating history so that I can find books I'll enjoy.
-3. As a reader, I want to see why a book was recommended (e.g., similar to books I rated highly) so that I can trust the recommendations.
-4. As a reader, I want to exclude books I've already read from recommendations so that results are actionable.
-5. As a reader, I want to control how many recommendations I receive (top-K) so that I can browse at my preferred depth.
-6. As a developer, I want to run the full pipeline (data → features → train → evaluate → recommend) from CLI scripts so that the workflow is reproducible.
-7. As a developer, I want to configure hyperparameters via YAML files so that I can track and compare experiments.
-8. As a developer, I want offline evaluation metrics (Hit Rate@10, NDCG@10) so that I can measure whether model changes are improvements.
-9. As a developer, I want to precompute and cache book embeddings so that I don't re-run the sentence-transformer on every training run.
-10. As a developer, I want temporal train/validation/test splits so that evaluation reflects real-world prediction (no future leakage) and I can tune hyperparameters without contaminating the test set.
-11. As a developer, I want to save and load trained model checkpoints so that I don't retrain from scratch every session.
-12. As a developer, I want to save and load the FAISS index so that recommendation serving doesn't require rebuilding the index.
-13. As a developer, I want the data pipeline to filter low-signal records (books with <5 ratings, users with <10 ratings) so that training is efficient and meaningful.
-14. As a future maintainer, I want the project structured so that other users can plug in their own Goodreads export and get recommendations without modifying code.
-15. As a developer, I want trained artifacts (model, index, embeddings, config) stored on Hugging Face Hub so that they are versioned, shareable, and don't require retraining to use.
-16. As a developer, I want a cloud training notebook that handles Kaggle/Colab environment setup and calls my existing scripts so that I can train on free-tier GPUs without modifying my codebase.
-
-## Implementation Decisions
-
-### Data Pipeline (`mybookrec.data`)
-- UCSD Goodreads dataset as training corpus, loaded from JSON/CSV dumps
-- Personal Goodreads CSV export as the query user's preference signal
-- All raw data stored in `data/raw/`, processed data in `data/processed/` — both gitignored
-- Polars for all data processing; output as parquet files
-- **Language filter**: drop all books where `language_code` is not in `{"eng", "en-US", "en-GB", ""}` — applied before any feature engineering. Empty string is kept because many English books in the UCSD dataset have missing language codes.
-- **Rating filter**: drop all interactions where `rating == 0` (shelved but not rated — no taste signal). Only explicit 1–5 star ratings are used.
-- **Quality filter**: keep only books with 5+ ratings and users with 10+ explicit ratings
-- **Training labels**: `rating >= 4` → positive (1), `rating in {1, 2}` → negative (0), `rating == 3` → excluded (ambiguous)
-
-### Feature Engineering (`mybookrec.features`)
-
-#### Item Features
-- **Description embedding**: concatenate `"{title}. {description}"` then embed with `all-MiniLM-L6-v2` (384-dim). Precomputed once, stored as NumPy `.npy` with a book_id ↔ row index mapping.
-- **Genre vector**: built from `book_genres_initial.json`. Find all unique genre keys across the corpus (~25 categories), build a count-weighted vector per book, L2-normalize. Fixed genre ordering stored as a vocab file.
-- **Page count**: `num_pages` min-max normalized to [0, 1] using 1st–99th percentile range to avoid outlier skew. Verify empty strings in EDA and impute with median if present.
-
-Item tower input dimensionality: ~410 (384 description + ~25 genre + 1 pages)
-
-#### User Features (built from personal Goodreads CSV)
-- **Like embedding** (384-dim): rating-weighted average of description embeddings for all books rated 4+ stars. Weight = rating value (5-star counts more than 4-star).
-- **Dislike embedding** (384-dim): simple average of description embeddings for all books rated 1–2 stars. If fewer than ~10 disliked books exist, this vector will be noisy — verify in EDA.
-- **Genre distribution** (~25-dim): aggregated genre vector from all 4+ star rated books, L2-normalized. Uses same genre vocab as item features.
-- **Mean page preference** (1-dim): mean of normalized `num_pages` across all 4+ star rated books.
-
-User tower input dimensionality: ~794 (384 like + 384 dislike + ~25 genre + 1 pages)
-
-#### Training Pairs
-- Negative sampling: uniform random, 4 negatives per 1 positive, re-sampled each epoch. Log-frequency sampling (popularity-aware) is a deliberate v2 A/B against this baseline — see Future Iterations.
-- Temporal split per user ordered by rating date: train (70%), validation (10%), test (20%)
-- Validation set used for early stopping and hyperparameter tuning
-- Test set held out completely, only used for final model evaluation
-
-### Model (`mybookrec.model`)
-- Two-tower architecture: separate `UserTower` and `ItemTower` (both `nn.Module`)
-- Each tower maps its input features through an MLP to a shared embedding space
-- Similarity via dot product between user and item embeddings
-- Loss: `BCEWithLogitsLoss`
-- Raw PyTorch training loop (no Lightning)
-- Device-agnostic: auto-detects CUDA, falls back to CPU
-- Optimizer: Adam
-- Early stopping based on validation Hit Rate@10
-- Model checkpoint save/load via `torch.save` / `torch.load`
-
-### Post-Ranking Filters
-Applied after FAISS retrieval, before presenting results to the user. Configurable via YAML:
-- `min_avg_rating` (float, default 3.5): exclude books below this global average rating
-- `ebook_only` (bool, default false): restrict results to books where `is_ebook == true`
-- Already-read books are always excluded (matched against personal Goodreads CSV)
-
-These are format/quality constraints, not taste signals — keeping them out of the model prevents popularity bias and format conflation.
-
-### Evaluation (`mybookrec.eval`)
-- Hit Rate@10: was the held-out book in the top 10 predictions?
-- NDCG@10: accounts for ranking position of correct predictions
-- Validation metrics computed each epoch to guide training decisions
-- Test metrics computed once on final model only
-- Personal vibe check: generate top-20 for the user's own profile and manually review
-
-### Index (`mybookrec.index`)
-- FAISS `IndexFlatIP` (exact inner product search)
-- Built from item tower output embeddings (not raw sentence-transformer embeddings)
-- Serialized via `faiss.write_index` / `faiss.read_index`
-- Query: user embedding → top-K book IDs with similarity scores
-
-### Configuration (`mybookrec.config`)
-- Pydantic `BaseSettings` class covering all paths and hyperparameters
-- Loaded from YAML files in `configs/`
-- Environment variable overrides supported via `.env`
-- Post-ranking filter params (`min_avg_rating`, `ebook_only`) live here
-
-### Artifact Storage (Hugging Face Hub)
-- Trained model checkpoint (`.pt`)
-- FAISS index (`.faiss`)
-- Precomputed embedding matrix (`.npy`) + book_id ↔ row index mapping
-- Genre vocab file (fixed ordering for genre vectors)
-- Config YAML used for the training run (reproducibility)
-- Upload/download via `huggingface_hub` Python library
-
-### Project Structure
-- `src/mybookrec/` — all library code in subpackages (data, features, model, eval, index, config)
-- `src/mybookrec/train.py`, `evaluate.py`, `recommend.py` — entrypoints within the package
-- `scripts/` — thin CLI runners: `train.py`, `evaluate.py`, `recommend.py`, `embed.py`
-- `notebooks/eda/` — Jupyter notebooks for exploratory data analysis
-- `notebooks/cloud_train.ipynb` — cloud environment setup + calls scripts for GPU training
-- `configs/` — YAML experiment configs
-
-### Compute Strategy
-- Local CPU for development, EDA, and debugging
-- Free-tier GPU (Kaggle Notebooks or Google Colab) for embedding precomputation and model training
-- `cloud_train.ipynb` handles environment setup (install deps, download data from source, run scripts, upload artifacts to HF Hub)
-
-## Testing Decisions
-
-A good test verifies **external behavior and data contracts**, not internal implementation.
-
-### Modules with tests:
-
-**`mybookrec.features`**
-- Negative sampling produces correct 4:1 ratio and no overlap with positives
-- Embedding matrix has expected shape (num_books × 384)
-- Temporal split: all validation dates > all train dates, all test dates > all validation dates, per user
-- User like/dislike vectors have correct dimensionality (384)
-- Genre vector has correct dimensionality and sums to 1.0 after L2 normalization
-- `rating == 0` and `rating == 3` interactions are excluded from training pairs
-- Language filter removes non-English books
-
-**`mybookrec.model`**
-- Forward pass produces correct output shapes for given input dimensions
-- Training loop reduces loss over a small number of batches (smoke test)
-- User and item tower outputs are the same embedding dimension
-- Model save/load round-trips correctly
-
-**`mybookrec.eval`**
-- Hit Rate@K with synthetic data where answer is known
-- NDCG@K with synthetic data where answer is known
-- Edge cases: user with no test items, K larger than candidate set
-
-### Modules without dedicated tests:
-- `mybookrec.data` — integration-tested through the pipeline entrypoints
-- `mybookrec.index` — thin FAISS wrapper, tested via end-to-end recommendation flow
-- `mybookrec.config` — Pydantic validates at instantiation; no custom logic to test
-
-## Out of Scope (MVP)
-
-- **Open Library API enrichment** — all MVP item features (num_pages, description, is_ebook, language_code, genres) are available in the UCSD dataset directly. No external API needed.
-- **Author features** — description embeddings partially capture authorial style. A proper implementation (author ID embeddings or author-aggregated embeddings) needs enough per-author interactions to train well. Deferred to v2.
-- **Book-to-book similarity search** — trivially available once item tower is trained, but not part of MVP
-- **Contrastive / triplet loss** — future upgrade from BCE
-- **Log-frequency negative sampling** — future upgrade from uniform random
-- **MLflow experiment tracking** — config structure supports it, deferred
-- **FAISS approximate search (IndexIVFFlat)** — unnecessary at current scale
-- **Multi-user serving / web interface** — MVP is CLI-only for a single user
-- **Real-time Goodreads sync** — manual CSV export only
-- **Review text as a user feature** — user primarily rates and shelves
-
-## Future Scope Notes
-
-- **Dislike embedding weighting**: for MVP, dislike embedding is a simple average of 1–2 star book embeddings. A v2 improvement is inverse-rating weighting (1-star gets more weight than 2-star).
-- **Author embeddings**: two viable approaches for v2 — (A) author ID lookup table trained end-to-end, (B) precomputed per-author embedding as mean of their books' description embeddings. Option B avoids cold-start for obscure authors.
-- **Explicit dislike genre signal**: currently genre distribution is built from positives only. A v2 "dislike genre vector" (from 1–2 star books) could be added to the user tower as a separate input.
-- **Temporal decay on like embedding**: for MVP, the like embedding treats all 4+ star ratings equally. A v2 improvement is multiplying each book's weight by `exp(-λ * days_since_rating)` so recent ratings count more than old ones. `λ` would be a config hyperparameter (λ = 0 recovers MVP behavior). Requires verifying `date_added` coverage in EDA first — if the Goodreads CSV has sparse or unparseable dates, this signal degrades. Same decay could optionally be applied to the genre distribution.
-- **Updated genre taxonomy with hybrid vectors**: the MVP uses the UCSD `book_genres_initial.json` genre list, which is a fixed snapshot of Goodreads shelf taxonomy and likely stale. A v2 improvement replaces this with a maintained taxonomy (BISAC from bisg.org or Thema from editeur.org), then builds genre vectors via a two-step process: (1) embed all unique `popular_shelves` names using the existing `all-MiniLM-L6-v2` model, (2) embed each taxonomy category label, (3) map each shelf's count signal to taxonomy dimensions via cosine similarity, producing a soft count-weighted genre vector per book. This eliminates hard taxonomy coupling, handles shelf name variants (e.g. "sci-fi" / "scifi" / "science-fiction" all map to the same BISAC category), and produces a denser, less collinear genre space. Genre vector dimensionality will change from ~25 to ~50 (BISAC top-level), so user and item tower input dims must be updated accordingly.
-
----
-
-## Step-by-Step Build Guide
-
-This is a rough ordered guide from EDA to a working local MVP. Steps within a phase can overlap; phases are sequential.
-
-### Phase 0: EDA (`notebooks/EDA.ipynb`) DONE
-
-1. **Inspect `books_df`**
-   - Check `num_pages`: count empty strings (not just nulls — it's a str column)
-   - Check `language_code`: distribution of values, how many empty strings, how many non-English
-   - Check `description`: coverage (how many empty?), typical length
-   - Check `is_ebook`: value distribution
-
-2. **Inspect `interactions_df`**
-   - Rating distribution: how many 0s, 1s, 2s, 3s, 4s, 5s
-   - After dropping 0-rated rows: how many users remain with 10+ ratings?
-   - Temporal coverage: date range of ratings, are dates parseable?
-
-3. **Inspect `book_genres_initial.json`**
-   - How many unique genre keys exist?
-   - What fraction of books have genre data?
-   - Distribution of genre counts per book
-
-4. **Inspect personal Goodreads CSV**
-   - How many books rated? Rating distribution?
-   - How many 1–2 star books (dislike signal quality)?
-   - How many 4+ star books (like signal quality)?
-   - Do book titles/IDs match UCSD dataset?
-
----
-
-### Phase 1: Data Pipeline (`mybookrec/data/`) DONE
-
-5. **Load and filter interactions**
-   - Load `goodreads_interactions_dedup.json.gz`
-   - Drop `rating == 0`
-   - Keep users with 10+ remaining ratings
-
-6. **Load and filter books**
-   - Load `goodreads_books.json.gz`
-   - Filter `language_code` to English (`{"eng", "en-US", "en-GB", ""}`)
-   - Filter to books with 5+ ratings (join on `ratings_count` or compute from filtered interactions)
-   - Handle `num_pages` empty strings: cast to int, impute missing with median
-
-7. **Load genres**
-   - Load `goodreads_book_genres_initial.json.gz`
-   - Join onto books on `book_id`
-
-8. **Join and save**
-   - Inner join books + interactions + genres
-   - Save as parquet: `data/processed/books.parquet`, `data/processed/interactions.parquet`
-
-9. **Temporal train/val/test split**
-   - Per user, sort interactions by `date_added`
-   - Split 70% train / 10% val / 20% test
-   - Save as separate parquets
-
----
-
-### Phase 2: Feature Engineering (`mybookrec/features/`)
-
-10. **Build genre vocab** DONE
-    - Collect all unique genre keys across the corpus
-    - Save as an ordered list to `data/processed/genre_vocab.json` — this is the fixed mapping for all genre vectors
-
-11. **Precompute book embeddings** (`scripts/embed.py`) DONE
-    - For each book: `text = f"{title}. {description}"`
-    - Run through `all-MiniLM-L6-v2` in batches
-    - Save as `data/processed/book_embeddings.npy`
-    - Save `book_id → row index` mapping as `data/processed/book_id_to_idx.json`
-    - *Run on GPU (Kaggle/Colab); upload to HF Hub and reuse*
-
-12. **Build item feature matrix** DONE
-    - Genre vector: for each book, build count vector over genre vocab, L2-normalize
-    - Pages: min-max normalize using 1st–99th percentile of the corpus
-    - Save normalization params (min, max) to config/artifacts for inference reuse
-
-13. **Build user features from personal Goodreads CSV** DONE
-    - Match your rated books to UCSD `book_id`s
-    - Like embedding: rating-weighted mean of embeddings for 4+ star books
-    - Dislike embedding: simple mean of embeddings for 1–2 star books
-    - Genre distribution: sum genre vectors of 4+ star books, L2-normalize
-    - Mean pages: mean of normalized `num_pages` for 4+ star books
-
-14. **Build training pairs** DONE
-    - For each user in train split: collect positives (4+) and sample 4× negatives (uniform random from unrated books)
-    - Re-sample negatives each epoch during training (don't precompute a static negative set)
-    - Exclude 3-star and 0-star rated books from negative pool for that user
-
----
-
-### Phase 3: Model (`mybookrec/model/`)
-
-15. **Define `ItemTower`**
-    - Input: `[genre_vector (~25) | normalized_pages (1) | description_embedding (384)]` → ~410-dim
-    - Architecture: MLP → shared embedding dim (e.g. 64 or 128 — tune via config)
-    - L2-normalize output
-
-16. **Define `UserTower`**
-    - Input: `[like_embedding (384) | dislike_embedding (384) | genre_dist (~25) | mean_pages (1)]` → ~794-dim
-    - Architecture: MLP → same shared embedding dim
-    - L2-normalize output
-
-17. **Training loop**
-    - Similarity: dot product of user and item embeddings
-    - Loss: `BCEWithLogitsLoss`
-    - Optimizer: Adam
-    - Resample negatives each epoch
-    - Compute val Hit Rate@10 after each epoch
-    - Early stopping: save checkpoint when val Hit Rate@10 improves
-
----
-
-### Phase 4: Evaluation (`mybookrec/eval/`)
-
-18. **Write metric functions**
-    - `hit_rate_at_k(user_embedding, test_book_ids, all_item_embeddings, k)`
-    - `ndcg_at_k(...)` — same signature
-    - Test with synthetic data first (unit tests)
-
-19. **Run evaluation on test split**
-    - For each user in test split: compute their user embedding from train interactions, retrieve top-K, check against held-out test books
-    - Report mean Hit Rate@10 and NDCG@10
-
-20. **Personal vibe check**
-    - Generate top-20 recs for your own Goodreads CSV
-    - Manually review: do these look like books you'd actually read?
-
----
-
-### Phase 5: FAISS Index + Recommendations (`mybookrec/index/`, `mybookrec/recommend.py`)
-
-21. **Build FAISS index**
-    - Run all books through trained `ItemTower` to get item embeddings
-    - Build `IndexFlatIP` over all item embeddings
-    - Save: `faiss.write_index(index, "data/processed/book_index.faiss")`
-
-22. **Recommendation pipeline**
-    - Load user's Goodreads CSV → compute user features → run through `UserTower` → get user embedding
-    - Query FAISS index for top-K × 3 (oversample to allow for post-filtering)
-    - Apply post-ranking filters: `min_avg_rating`, `ebook_only`
-    - Exclude already-read books
-    - Return top-K with titles and similarity scores
-
----
-
-### Phase 6: Artifact Storage
-
-23. **Upload to Hugging Face Hub**
-    - `book_embeddings.npy` + `book_id_to_idx.json`
-    - `book_index.faiss`
-    - Model checkpoint (`.pt`)
-    - Genre vocab (`genre_vocab.json`)
-    - Normalization params
-    - Config YAML
-
-24. **Cloud training notebook** (`notebooks/cloud_train.ipynb`)
-    - Environment setup (install deps via uv or pip)
-    - Download UCSD data
-    - Run `scripts/embed.py` on GPU
-    - Run `scripts/train.py`
-    - Upload artifacts to HF Hub
-
----
-
-### Later Scope (post-MVP, in rough priority order)
-
-- Author embeddings (v2 item feature)
+A two-tower neural network trained on the UCSD Goodreads dataset. The system encodes users and books into a shared embedding space; at inference, the user embedding is dot-producted against all book embeddings to retrieve top-K recommendations.
+
+MVP scope: profile-based recommendations for a single user (me).
+
+## Current status
+
+| Component | State |
+|---|---|
+| Data pipeline | ✅ Done |
+| EDA | ✅ Done |
+| Item features (v1: 395-dim, v4: 779-dim with authors) | ✅ Done |
+| User features (personal + bulk train, v1 779-dim, v4 1163-dim) | ✅ Done |
+| Training pairs Dataset | ✅ Done |
+| TwoTowerModel (`mybookrec/model/towers.py`) | ✅ Done |
+| Training loop | ✅ Done (Mac MPS, ~14 batches/sec) |
+| Eval metrics (HR@K, NDCG@K) | ✅ Done |
+| InfoNCE loss (`mybookrec/model/loss.py`) | ⚠️ Built, didn't converge in budget |
+| Cross-encoder reranker (`mybookrec/model/cross_encoder.py`) | ⚠️ Built, undertrained |
+| FAISS index for inference | ⏳ Not yet built |
+| Recommendation pipeline (`recommend.py`) | ⏳ Not yet built (manual via notebooks) |
+| Personal vibe check notebook | ✅ Done |
+| HF Hub artifact upload | ⏳ Not yet done |
+
+### Current best model
+
+**`data/checkpoints/two_tower_mac.pt` (v1):** BCE + uniform negative sampling + dropout=0.1. Trained ~56,000 batches on Apple Silicon MPS.
+
+**Eval (5,000 test pairs, leave-one-out, rng=0)**:
+- HR@10 = **0.0100** (1,667× random baseline)
+- NDCG@10 = **0.0043**
+- NDCG given hit = 0.43 (rank ~3-4 on average when hit)
+
+## Architecture
+
+### Two-tower retrieval
+
+```
+User features (779 or 1163-dim)        Item features (395 or 779-dim)
+        ↓                                       ↓
+    UserTower MLP                          ItemTower MLP
+   779/1163 → 512 → 256 → 128            395/779 → 512 → 256 → 128
+        ↓                                       ↓
+   L2-normalize                          L2-normalize
+        ↓                                       ↓
+   user_emb (128)                         item_emb (128)
+                    ↘                  ↙
+                   dot product × τ
+                          ↓
+                   logit → sigmoid → BCE
+```
+
+- Dropout=0.1 between layers, ReLU activation.
+- Learnable temperature `τ` (init=10) scales L2-normed dot product into a useful logit range.
+- BCE loss with 4:1 negative-to-positive sampling.
+- Adam optimizer, LR=1e-3.
+
+### Items features
+
+| Channel | Dim | Source |
+|---|---|---|
+| Description embedding | 384 | `ibm-granite/granite-embedding-30m-english` on `"{title}. {description}"` |
+| Genre vector | 10 | L2-normalized count over fixed vocab (10 categories from `book_genres_initial.json`) |
+| Normalized pages | 1 | Min-max with 1st/99th percentile clipping, median-imputed for missing |
+| Author embedding (v4) | 384 | Mean of all books' description embeddings by that author |
+
+v1 total: **395-dim**. v4 with author features: **779-dim**.
+
+### User features
+
+Built from train-split interactions only (no leakage from val/test).
+
+| Channel | Dim | Source |
+|---|---|---|
+| Like embedding | 384 | Rating-weighted mean of liked books' (≥4 star) description embeddings |
+| Dislike embedding | 384 | Simple mean of disliked books' (1-2 star) description embeddings (zero if none) |
+| Genre distribution | 10 | L2-normalized sum of liked books' genre vectors |
+| Mean pages | 1 | Average of liked books' normalized pages |
+| Author taste (v4) | 384 | Rating-weighted mean of liked authors' embeddings |
+
+v1 total: **779-dim**. v4 with author features: **1163-dim**.
+
+## Data pipeline
+
+1. **Raw data** — UCSD Goodreads JSON dumps (gitignored, ~30 GB across all files).
+2. **Filter** — language ∈ `{eng, en-US, en-GB, ""}`, ratings_count ≥ 5 (books), explicit ratings only (drop rating=0), users with ≥10 ratings.
+3. **Train labels** — rating ≥ 4 → positive, rating ∈ {1, 2} → negative, rating = 3 → excluded.
+4. **Temporal per-user split** — 70% train / 10% val / 20% test by `date_added`.
+
+**Slim parquet trick**: the full `books_with_interactions.parquet` is 19 GB (duplicates book metadata per interaction). For training we use a slimmed version `training_interactions.parquet` with only `(user_id, book_id, rating, data_split)` → ~530 MB, zstd-compressed. Built by [build_training_interactions.ipynb](../mybookrec/data_load/build_training_interactions.ipynb).
+
+## Training pipeline
+
+Implemented in [mybookrec/model/train.ipynb](../mybookrec/model/train.ipynb).
+
+- Loads precomputed feature matrices to GPU (CUDA, MPS, or CPU).
+- Iterates `TrainingPairsDataset` via DataLoader.
+- Per batch: encode user (B, H), encode positive + 4 negatives (B, 5, H), dot-product, BCE.
+- Checkpoints every 5K batches, early stopping with patience=5 on val loss.
+- ~14 batches/sec on Apple Silicon MPS.
+
+**Negative sampling** (in `TrainingPairsDataset`):
+- `"uniform"` (default): random over the catalog with rejection of user-rated books.
+- `"log_freq"`: probability ∝ log(book_count + 1). Implemented via inverse-CDF + `np.searchsorted` for speed (~100× faster than `torch.multinomial`).
+
+## Eval pipeline
+
+Implemented in [mybookrec/eval/](../mybookrec/eval/).
+
+- **Metrics** (`metrics.py`): batched `hit_rate_at_k`, `ndcg_at_k`. Unit-tested.
+- **Full eval** (`run_eval.ipynb`): samples 5,000 test (user, positive_book) pairs with fixed seed, scores all 1.78M books per user, masks train-rated books, computes HR@10 + NDCG@10.
+- **Vibe check** (`vibe_check.ipynb`): generates top-20 recommendations for *me* against any trained checkpoint. Shows titles, average ratings, page counts, similarity scores.
+
+## v3 overhaul attempts and findings
+
+Detailed in [v3-overhaul-results.md](v3-overhaul-results.md). Summary:
+
+| Experiment | What changed vs v1 | HR@10 | Verdict |
+|---|---|---|---|
+| v2 | log_freq sampling, dropout=0.3, weight_decay | 0.0066 | over-regularized |
+| v3 (InfoNCE + in-batch + collision mask) | BCE → InfoNCE | 0.0015 → 0 | learnable τ diverged; didn't converge in budget even with fixed τ |
+| v4-BCE (author features + BCE) | +author dim | 0.0062 | undertrained (5k vs v1's 56k batches; killed early due to system load) |
+| v6 pipeline (v4-BCE + cross-encoder rerank) | retrieve top-100, rerank | 0.0054 | both stages undertrained; reranking at noise floor |
+
+**Key bugs caught and fixed during overhaul** (preserved in `loss.py`):
+1. In-batch positive leakage — when two users in a batch share the same positive book, the in-batch trick treats one as the other's negative. Fix: mask off-diagonal entries where `pos_idx[i] == pos_idx[j]`.
+2. NaN gradients from `-inf × temperature` in autograd. Fix: mask after scaling by temperature, not before.
+
+**Lesson**: training budget compounded — v1 had 11× more batches than the new architectures. None of the new architectures got enough training to validate their lift.
+
+## Remaining MVP work
+
+In rough priority order:
+
+1. **Re-train v4-BCE for the full ~60-minute MPS budget** that v1 got. Most likely path to beat HR@10 = 0.0100.
+2. **FAISS index** — load trained ItemTower, encode all 1.78M books, build `IndexFlatIP`, serialize. Today eval uses raw `torch.topk` over the full catalog (sub-second), but a saved FAISS index makes inference reproducible and portable.
+3. **Recommendation CLI** (`scripts/recommend.py`) — wraps the vibe-check notebook as a reusable command-line tool. Args: checkpoint path, user CSV, top-K.
+4. **Post-ranking filters** — `min_avg_rating`, `ebook_only` toggles applied to FAISS top-(K*3) before final top-K. Already-read books always excluded.
+5. **HF Hub upload** — model checkpoint, item feature matrix, book_id mapping, genre vocab, author embeddings.
+6. **Cloud training notebook** (`notebooks/cloud_train.ipynb`) — Colab T4 setup that runs `embed.ipynb` and the training script. Useful when Mac MPS runs become impractical.
+
+## Deferred improvements (post-MVP)
+
+Concrete next steps for each are in [v3-overhaul-deferred-items.md](v3-overhaul-deferred-items.md).
+
+| Improvement | Expected lift | Effort | Notes |
+|---|---|---|---|
+| Better embeddings (MPNet 768 / BGE 1024-dim) | 1.2-1.3× | 4 GPU-hours | Single biggest content-side lever; benefits v1 immediately, no retraining of features |
+| Review text features | 1.2-1.5× | 30 GPU-hours + data download | UCSD reviews ~50 GB uncompressed |
+| BISAC / hybrid taxonomy | 1.2-1.5× | 4 hours data work | Replace 10-genre vocab with shelf-name embedding mapping to ~50 BISAC categories |
+| SASRec (transformer over user sequence) | 1.5-2× | 1 week | Major architectural rewrite; captures temporal taste shifts |
+| Hard negative mining | 1.5-2× | 1 hour | Code already in `/tmp/train_mac_v5.py`; only useful with a converged InfoNCE base |
+| Temporal decay in user features | 1.2× | 30 min | Requires propagating `date_added` into slim parquet |
+
+Also deferred:
 - Dislike genre vector in user tower
 - Inverse-rating weighting for dislike embedding
-- Updated genre taxonomy with hybrid vectors (see Future Scope Notes)
-- Contrastive/triplet loss (replace BCE)
-- Log-frequency negative sampling
+- Book-to-book similarity (trivial once item tower is trained)
 - MLflow experiment tracking
-- FAISS `IndexIVFFlat` (approximate search at scale)
-- Book-to-book similarity search
-- Multi-user support
+- FAISS `IndexIVFFlat` (approximate search — unnecessary at 1.78M scale)
+- Multi-user serving / web interface
+- Pydantic `BaseSettings` + YAML config (currently hyperparams live in training scripts)
 
----
+## Project structure (actual, as of v3 overhaul)
 
-## Further Notes
+```
+mybookrec/
+├── __init__.py              # ROOT_DIR, DATA_DIR (env-var overrideable via MYBOOKREC_DATA_DIR)
+├── data_load/
+│   ├── transform_and_save.ipynb       # raw json → cleaned parquets + temporal split
+│   └── build_training_interactions.ipynb  # slim parquet for fast training
+├── features/
+│   ├── generate_vocab.ipynb           # genre_vocab.json
+│   ├── genre_vocab.json               # fixed 10-genre vocab
+│   ├── build_item_feature.ipynb       # 395-dim item matrix
+│   ├── build_user_feature.ipynb       # personal user vector
+│   ├── build_train_user_features.ipynb # bulk user matrix for training
+│   ├── build_training_pairs.ipynb     # Dataset walkthrough
+│   └── training_pairs.py              # TrainingPairsDataset (importable)
+├── model/
+│   ├── towers.py                      # ItemTower, UserTower, TwoTowerModel
+│   ├── loss.py                        # info_nce_in_batch (with collision mask)
+│   ├── cross_encoder.py               # CrossEncoder for re-ranking
+│   └── train.ipynb                    # training loop
+└── eval/
+    ├── metrics.py                     # hit_rate_at_k, ndcg_at_k
+    ├── run_eval.ipynb                 # 5k-pair HR@10 / NDCG@10
+    └── vibe_check.ipynb               # personal top-K with titles
+
+data/
+├── raw/                               # UCSD dumps (gitignored)
+└── transformed/                       # all processed artifacts (gitignored)
+    ├── books_with_genres.parquet
+    ├── books_with_interactions.parquet  # 19 GB full
+    ├── training_interactions.parquet    # 530 MB slim
+    ├── book_embeddings.npy              # (1.78M, 384) float16
+    ├── genre_matrix.npy                 # (1.78M, 10)
+    ├── num_pages_normalized.npy         # (1.78M,)
+    ├── num_pages_norm_params.json       # p1/p99/median for inference
+    ├── train_user_features.npy          # (783K, 779)
+    ├── train_user_features_v4.npy       # (783K, 1163) with author taste
+    ├── item_features_v4.npy             # (1.78M, 779) with author embedding
+    ├── author_embeddings.npy            # (386K, 384)
+    ├── book_to_author_idx.npy
+    ├── book_id_to_index.json
+    ├── user_id_to_index.json
+    ├── author_id_to_index.json
+    ├── my_books.csv                     # personal export
+    └── user_features.npy                # (779,) personal vector
+
+data/checkpoints/                       # gitignored
+├── two_tower_mac.pt                    # v1 — production model
+├── two_tower_v2_best.pt
+├── two_tower_v3_best.pt
+├── two_tower_v4bce_best.pt
+└── cross_encoder_v6.pt
+
+plans/
+├── book-recommender-mvp-plan.md        # this file
+├── v3-overhaul-results.md
+└── v3-overhaul-deferred-items.md
+```
+
+## Implementation decisions worth knowing
+
+These are decisions that surfaced during build and are worth surfacing in the plan because they shape the rest of the system.
+
+### Feature matrices over `nn.Embedding`
+
+Item features are precomputed numpy arrays loaded as plain torch tensors, not `nn.Embedding` layers. Reasons: explicit memory control (5+ GB of features), no gradient buffer overhead on the static feature tables, easier to swap feature sets between experiments.
+
+### Inverse-CDF sampling
+
+For log-frequency negative sampling, `torch.multinomial` over 1.78M elements called per-anchor produced a 30× slowdown. Fix: precompute the cumulative distribution once, sample via `np.random.random() + np.searchsorted` — same distribution, ~100× faster.
+
+### Sparse matmul for collaborative aggregation
+
+Building bulk user features (rating-weighted mean over each user's liked books) uses a `(n_users, n_books)` sparse matrix multiplied by the dense `(n_books, 384)` embedding matrix. ~5 seconds for 783K users, vs 10+ minutes for a Python loop. Same pattern reused for author embeddings.
+
+### Why temperature is learnable in `TwoTowerModel` but didn't help
+
+L2-normalized dot products are bounded in `[-1, 1]`, which caps sigmoid in roughly `[0.27, 0.73]` — too narrow for BCE to push confident predictions. Temperature `τ` multiplies the similarity into a usable logit range. Init at `τ=10`, parameterized in log space (so Adam updates can't push it negative).
+
+For BCE this works fine — `τ` ends up around 28 in v1.
+
+For InfoNCE this caused divergence: the model found it easier to crank temperature than to improve embeddings. Documented in v3-overhaul-results.
+
+### Granite embeddings over MiniLM
+
+`ibm-granite/granite-embedding-30m-english` is what's actually used (same 384 dim as MiniLM, faster on the user's setup). Plan originally specified MiniLM; the swap was made during step 11 (embed.ipynb).
+
+### Genre count is 10, not 25
+
+The UCSD `book_genres_initial.json` has 10 top-level categories (not 25 as the original plan estimated). Item tower input dim is 395 (not ~410 as v1 plan said); user tower is 779 (not ~794).
+
+## Further notes
 
 - The UCSD Goodreads dataset requires emailing the authors for access (sites.google.com/eng.ucsd.edu/ucsdbookgraph). Plan for a few days wait time.
-- Sentence-transformer embedding of the filtered book set on a T4 GPU takes roughly 15–30 minutes. Run once via `scripts/embed.py`, upload to HF Hub, reuse across training runs.
-- `num_pages` is a `str` column in the raw data — pandas `.info()` showing "non-null" does not mean no empty strings. Verify in EDA before assuming it's clean.
-- At inference time, normalization params (num_pages min/max, genre vocab ordering) must be identical to those used during training. Save them as artifacts alongside the model.
-- The architecture is designed so that upgrading from BCE to contrastive loss requires changing only the loss function and training pair generation — tower architectures stay the same.
+- Sentence-transformer embedding of the filtered book set on a T4 GPU takes 15–30 minutes. Run once via `scripts/embed.ipynb`, save to Drive/HF Hub, reuse across training runs.
+- At inference time, normalization params (num_pages min/max, genre vocab ordering, author_id_to_index) must be identical to those used during training. Save them as artifacts alongside the model.
+- On Colab/Cloud, set `MYBOOKREC_DATA_DIR` env var before importing the package to redirect `DATA_DIR` to wherever data lives in that environment (typically `/content/drive/MyDrive/MyBookRec/data`).
+- Cross-encoder is the only model trained with BCE on independent (user, item) pairs (no in-batch). Two-tower variants use either BCE-with-sampled-negatives or InfoNCE-with-in-batch.
