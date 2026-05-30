@@ -123,7 +123,42 @@ Implemented in [mybookrec/eval/](../mybookrec/eval/).
 
 - **Metrics** (`metrics.py`): batched `hit_rate_at_k`, `ndcg_at_k`. Unit-tested.
 - **Full eval** (`run_eval.ipynb`): samples 5,000 test (user, positive_book) pairs with fixed seed, scores all 1.78M books per user, masks train-rated books, computes HR@10 + NDCG@10.
-- **Vibe check** (`vibe_check.ipynb`): generates top-20 recommendations for *me* against any trained checkpoint. Shows titles, average ratings, page counts, similarity scores.
+- **Vibe check** (`vibe_check.ipynb`): generates top-20 recommendations for the synthetic "me" against any trained checkpoint. Shows titles, average ratings, page counts, similarity scores.
+
+## Synthetic "me" — the test profile
+
+`data/raw/goodreads_library_export.csv` (and the derived `my_books.csv`) isn't a real personal export; it's repackaged from a single UCSD power user via [scripts/build_synthetic_library.py](../scripts/build_synthetic_library.py). User id `096c015b…`, **293 rated books** chosen for rich, varied signal.
+
+**Rating distribution**: 227×5★, 16×4★, 8×3★, 15×2★, 27×1★. Love-it-or-hate-it rater — useful because the dislike signal is unusually strong.
+
+**Like clusters (243 books @ 4-5★)**:
+- YA fantasy with female protagonists (Percy Jackson, Lunar Chronicles, Hunger Games, Seven Realms)
+- Manga, especially shoujo / coming-of-age (Ao Haru Ride, Arisa, Kodocha)
+- Avatar: The Last Airbender graphic novels
+- Classic children's / middle-grade (A Little Princess, The Graveyard Book)
+- LDS / religious texts (Book of Mormon, Doctrine & Covenants)
+- Issue-driven YA (Sarah's Key, Sold)
+
+**Dislike clusters (42 books @ 1-2★)**:
+- **All 4 Twilight books + the box set rated 1★** — cleanest negative test case the dataset has
+- Literary classics taught in school (Wuthering Heights, Lord of the Flies, Grapes of Wrath)
+- Adult / heavier fantasy (Elantris, Sword of Shannara, Golden Compass)
+- Hyped contemporary YA they bucked (Divergent, Paper Towns)
+
+**Pattern**: female-led character-driven YA fantasy + manga + faith. Avoids adult literary fiction, paranormal romance, dense epic fantasy.
+
+**What to look for in vibe check results**:
+
+| Good signs (model is working) | Red flags (model is broken or biased) |
+|---|---|
+| YA fantasy series with female leads they haven't rated (Throne of Glass, Daughter of Smoke and Bone, Caraval) | **Twilight or paranormal romance** — proves the dislike embedding is doing nothing |
+| More shoujo / coming-of-age manga (Fruits Basket, Skip Beat) | Adult literary fiction (McCarthy, Murakami) |
+| Middle-grade with young female leads (Where the Mountain Meets the Moon, Ella Enchanted) | Adult male-led epic fantasy (Wheel of Time, Stormlight) |
+| Avatar/anime-adjacent graphic novels (Lumberjanes, Aru Shah) | Generic bestseller slop irrespective of input — popularity bias |
+| LDS-adjacent fiction (Brandon Mull) | Books the user already rated (means train-mask broke) |
+| Diverse top-10 mix across clusters | Top-10 all clones of a single Percy Jackson book |
+
+**Why this profile is a good test bed**: clean strong dislike signal (Twilight × 5 at 1★), coherent positive pattern (YA fantasy / female-led), contrarian on adult-fiction popularity, and includes a rare-but-strong sub-signal (LDS texts) that tests whether the model can pick up minority preferences.
 
 ## v3 overhaul attempts and findings
 
