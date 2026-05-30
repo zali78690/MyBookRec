@@ -8,9 +8,9 @@ Pipeline:
     5. Print top-K with titles, scores, and metadata.
 
 Usage:
-    .venv/bin/python scripts/recommend.py checkpoints/two_tower_v4bce_best.pt
-    .venv/bin/python scripts/recommend.py <ckpt> --top-k 20 --min-avg-rating 4.0 --ebook-only
-    .venv/bin/python scripts/recommend.py <ckpt> --index checkpoints/two_tower_v4bce_best_index.faiss
+    .venv/bin/python -m mybookrec.recommend checkpoints/two_tower_v4bce_best.pt
+    .venv/bin/python -m mybookrec.recommend <ckpt> --top-k 20 --min-avg-rating 4.0 --ebook-only
+    .venv/bin/python -m mybookrec.recommend <ckpt> --index checkpoints/two_tower_v4bce_best_index.faiss
 
 If --index isn't provided, the index is built on the fly (~2s on MPS).
 """

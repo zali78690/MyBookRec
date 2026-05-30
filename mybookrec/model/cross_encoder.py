@@ -12,6 +12,7 @@ pool (e.g., top-100 from the two-tower retrieval) to lift precision-at-top.
 Standard production pattern: retrieval (two-tower) → narrow 1.78M to ~100 → re-rank
 (cross-encoder) → final top-10.
 """
+
 from __future__ import annotations
 
 import torch
@@ -19,20 +20,29 @@ import torch.nn as nn
 
 
 class CrossEncoder(nn.Module):
+    """Joint user+item MLP for top-K re-ranking."""
+
     def __init__(
         self,
         user_input_dim: int,
         item_input_dim: int,
         hidden_dims: tuple[int, ...] = (512, 256, 128),
         dropout: float = 0.1,
-    ):
+    ) -> None:
+        """Build the joint MLP.
+
+        Args:
+            user_input_dim: Width of the user feature vector.
+            item_input_dim: Width of the item feature vector.
+            hidden_dims: MLP hidden layer widths. Output is always a single logit.
+            dropout: Dropout probability between hidden layers.
+        """
         super().__init__()
-        input_dim = user_input_dim + item_input_dim
         layers: list[nn.Module] = []
-        prev = input_dim
-        for h in hidden_dims:
-            layers += [nn.Linear(prev, h), nn.ReLU(), nn.Dropout(dropout)]
-            prev = h
+        prev = user_input_dim + item_input_dim
+        for hidden in hidden_dims:
+            layers += [nn.Linear(prev, hidden), nn.ReLU(), nn.Dropout(dropout)]
+            prev = hidden
         layers += [nn.Linear(prev, 1)]
         self.mlp = nn.Sequential(*layers)
 
@@ -40,17 +50,17 @@ class CrossEncoder(nn.Module):
         """Score (user, item) pairs jointly.
 
         Args:
-            user_features: shape (B, user_dim).
-            item_features: shape (B, item_dim) or (B, K, item_dim).
-                The latter is the broadcast case — score each user against K items.
+            user_features: Shape (batch_size, user_dim).
+            item_features: Shape (batch_size, item_dim) for one item per user, or
+                (batch_size, n_items, item_dim) to score several items per user.
 
         Returns:
-            (B,) or (B, K) score tensor (raw logits, not probabilities).
+            Raw logit shape (batch_size,) or (batch_size, n_items) matching the items shape.
         """
         if item_features.dim() == 3:
-            B, K, _ = item_features.shape
-            user_repeated = user_features.unsqueeze(1).expand(B, K, -1)
-            x = torch.cat([user_repeated, item_features], dim=-1)
-            return self.mlp(x).squeeze(-1)
-        x = torch.cat([user_features, item_features], dim=-1)
-        return self.mlp(x).squeeze(-1)
+            batch_size, n_items, _ = item_features.shape
+            user_repeated = user_features.unsqueeze(1).expand(batch_size, n_items, -1)
+            joint = torch.cat([user_repeated, item_features], dim=-1)
+            return self.mlp(joint).squeeze(-1)
+        joint = torch.cat([user_features, item_features], dim=-1)
+        return self.mlp(joint).squeeze(-1)

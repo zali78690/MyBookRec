@@ -10,7 +10,7 @@ Writes:
   filtered set (users with at least one liked book).
 
 Usage:
-    .venv/bin/python scripts/features/build_train_user_features.py
+    .venv/bin/python -m mybookrec.features.build_train_user_features
 """
 
 from __future__ import annotations

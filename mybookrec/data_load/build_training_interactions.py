@@ -6,7 +6,7 @@ training Dataset needs (user_id, book_id, rating, data_split) and zstd-compresse
 to roughly 500 MB. Fits in Drive quota and loads ~10x faster.
 
 Usage:
-    .venv/bin/python scripts/data_load/build_training_interactions.py
+    .venv/bin/python -m mybookrec.data_load.build_training_interactions
 """
 
 from __future__ import annotations

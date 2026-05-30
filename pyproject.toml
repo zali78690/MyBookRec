@@ -38,12 +38,30 @@ torch = { index = "pytorch-cpu" }
 [tool.ruff]
 target-version = "py312"
 line-length = 120
+# Notebooks are a different lint domain (cell magic, display-driven layouts).
+# Only embed.ipynb (Colab GPU) and EDA.ipynb (exploratory) remain.
+extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
+# E (pycodestyle errors), F (pyflakes), W (warnings), I (isort), N (naming),
+# D (pydocstyle/google), UP (pyupgrade), SIM (flake8-simplify), C4 (comprehensions).
+# N806/N803 stay enabled — they catch single-letter/uppercase variable names
+# (B, K, H, M_like, etc.) which are unreadable. Rename to batch_size, top_k,
+# hidden_dim, like_mask, etc. instead.
 select = ["E", "F", "W", "I", "N", "D", "UP", "SIM", "C4"]
+ignore = [
+    "N812",  # `import torch.nn.functional as F` — universal PyTorch convention
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests don't need every docstring (pytest function names are the docs).
+"tests/**" = ["D"]
+# Pipeline scripts have module-level docstrings; per-function parse_args() is repetitive.
+"mybookrec/data_load/**" = ["D107"]  # __init__ docstrings on dataclasses-ish helpers
+"mybookrec/features/build_*.py" = ["D107"]
 
 [tool.pyright]
 pythonVersion = "3.12"

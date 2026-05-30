@@ -4,7 +4,7 @@ Writes the fixed genre vocab (10 categories) to a JSON file. The same vocab is
 used by all downstream item/user feature pipelines, so it must be deterministic.
 
 Usage:
-    .venv/bin/python scripts/features/generate_vocab.py
+    .venv/bin/python -m mybookrec.features.generate_vocab
 """
 
 from __future__ import annotations

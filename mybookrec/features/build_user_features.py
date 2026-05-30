@@ -6,7 +6,7 @@ sized to the v1 feature set (779-dim: 384 like + 384 dislike + 10 genre + 1 page
 Run this after rebuilding item features or after updating your Goodreads CSV.
 
 Usage:
-    .venv/bin/python scripts/features/build_user_features.py
+    .venv/bin/python -m mybookrec.features.build_user_features
 """
 
 from __future__ import annotations

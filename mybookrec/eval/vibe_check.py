@@ -7,8 +7,8 @@ Diagnostic checks (against the known synthetic profile in my_books.csv):
         shoujo manga, middle-grade, Brandon Mull-style children's fantasy.
 
 Usage:
-    .venv/bin/python scripts/vibe_check.py checkpoints/two_tower_v4bce_best.pt
-    .venv/bin/python scripts/vibe_check.py <ckpt> --top-k 30
+    .venv/bin/python -m mybookrec.eval.vibe_check checkpoints/two_tower_v4bce_best.pt
+    .venv/bin/python -m mybookrec.eval.vibe_check <ckpt> --top-k 30
 """
 
 from __future__ import annotations

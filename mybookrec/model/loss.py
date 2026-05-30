@@ -9,6 +9,7 @@ For two-tower retrieval, in-batch negatives are free: every other user's positiv
 in the batch is a negative for you. With batch_size=B, each anchor sees B-1 in-batch
 negatives + N sampled negatives.
 """
+
 from __future__ import annotations
 
 import torch
@@ -39,33 +40,33 @@ def info_nce_in_batch(
     off-diagonal collisions to -inf via `pos_item_idx` so they're excluded from softmax.
 
     Args:
-        user_embs: shape (B, H), unit-norm user embeddings.
-        pos_item_embs: shape (B, H), unit-norm positive item embeddings.
-        neg_item_embs: shape (B, N, H), unit-norm sampled negative item embeddings.
+        user_embs: shape (batch_size, hidden_dim), unit-norm user embeddings.
+        pos_item_embs: shape (batch_size, hidden_dim), unit-norm positive item embeddings.
+        neg_item_embs: shape (batch_size, n_negatives, hidden_dim), unit-norm sampled negatives.
         temperature: scalar multiplier on similarities (higher = sharper distribution).
-        pos_item_idx: shape (B,) int tensor of positive item indices for collision masking.
+        pos_item_idx: shape (batch_size,) int tensor of positive item indices for collision masking.
             If None, collisions are not masked (faster but slightly biased).
 
     Returns:
         Scalar loss.
     """
-    B = user_embs.shape[0]
-    in_batch_sim = user_embs @ pos_item_embs.T  # (B, B)
-    sampled_sim = torch.einsum("bh,bnh->bn", user_embs, neg_item_embs)  # (B, N)
+    batch_size = user_embs.shape[0]
+    in_batch_sim = user_embs @ pos_item_embs.T  # (batch_size, batch_size)
+    sampled_sim = torch.einsum("bh,bnh->bn", user_embs, neg_item_embs)  # (batch_size, n_negatives)
     # CRITICAL: scale by temperature BEFORE masking. Otherwise -inf entries get multiplied
     # by temperature, and the gradient of `-inf * temperature` w.r.t. temperature is NaN
     # (which then propagates to every parameter via Adam's update). Masking the scaled logits
     # instead gives a clean gradient — masked entries are -inf in forward, contribute zero to
     # softmax, and gradient at those positions is exactly zero (no temperature dependency).
-    logits = torch.cat([in_batch_sim, sampled_sim], dim=1) * temperature  # (B, B + N)
+    logits = torch.cat([in_batch_sim, sampled_sim], dim=1) * temperature
 
     if pos_item_idx is not None:
-        same_item = pos_item_idx.unsqueeze(0) == pos_item_idx.unsqueeze(1)  # (B, B)
-        eye = torch.eye(B, dtype=torch.bool, device=logits.device)
+        same_item = pos_item_idx.unsqueeze(0) == pos_item_idx.unsqueeze(1)
+        eye = torch.eye(batch_size, dtype=torch.bool, device=logits.device)
         collision_mask = same_item & ~eye  # off-diagonal collisions only
-        pad = torch.zeros(B, sampled_sim.shape[1], dtype=torch.bool, device=logits.device)
-        full_mask = torch.cat([collision_mask, pad], dim=1)  # (B, B + N)
+        pad = torch.zeros(batch_size, sampled_sim.shape[1], dtype=torch.bool, device=logits.device)
+        full_mask = torch.cat([collision_mask, pad], dim=1)
         logits = logits.masked_fill(full_mask, float("-inf"))
 
-    targets = torch.arange(B, device=user_embs.device)
+    targets = torch.arange(batch_size, device=user_embs.device)
     return F.cross_entropy(logits, targets)

@@ -10,7 +10,7 @@ Pipeline:
     7. Transform personal Goodreads CSV export → my_books.csv.
 
 Usage:
-    .venv/bin/python scripts/data_load/transform_raw.py
+    .venv/bin/python -m mybookrec.data_load.transform_raw
 """
 
 from __future__ import annotations

@@ -4,9 +4,9 @@ Auto-detects which feature set (v1 vs v4) to use based on what's on disk.
 Override via --feature-set if you need to pin to a specific version.
 
 Usage:
-    .venv/bin/python scripts/train.py
-    .venv/bin/python scripts/train.py --time-budget 3600 --feature-set v4
-    .venv/bin/python scripts/train.py --dropout 0.3 --weight-decay 1e-5
+    .venv/bin/python -m mybookrec.model.train
+    .venv/bin/python -m mybookrec.model.train --time-budget 3600 --feature-set v4
+    .venv/bin/python -m mybookrec.model.train --dropout 0.3 --weight-decay 1e-5
 """
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
-"""Base Folder for Book Recommendation Source Code"""
+"""Base folder for book recommendation source code."""
+
 import os
 import pathlib
 

@@ -10,7 +10,7 @@ The book_embeddings.npy file comes from scripts/embed.ipynb (Colab GPU) — this
 script does not produce it.
 
 Usage:
-    .venv/bin/python scripts/features/build_item_features.py
+    .venv/bin/python -m mybookrec.features.build_item_features
 """
 
 from __future__ import annotations

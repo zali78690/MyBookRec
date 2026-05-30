@@ -10,6 +10,7 @@ Supports two negative-sampling distributions:
   often — this surfaces "hard negatives" (popular books that don't match user taste) so the
   model learns to discriminate by taste, not popularity.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,6 +24,13 @@ from mybookrec import DATA_DIR
 
 
 class TrainingPairsDataset(Dataset):
+    """PyTorch Dataset emitting (user_idx, positive_book_idx, negative_book_indices) per call.
+
+    Anchors are positive (rating ≥ 4) interactions from the requested data_split.
+    Negatives are freshly sampled on every __getitem__ so the same positive sees
+    different negatives across epochs without precomputing a static set.
+    """
+
     def __init__(
         self,
         n_negatives: int = 4,
@@ -30,7 +38,16 @@ class TrainingPairsDataset(Dataset):
         rng_seed: int | None = None,
         verbose: bool = True,
         negative_sampling: str = "uniform",
-    ):
+    ) -> None:
+        """Load positives, exclusion sets, and (if log_freq) the sampling CDF.
+
+        Args:
+            n_negatives: Sampled negatives per anchor.
+            data_split: One of "train", "validation", "test" — filters the source parquet.
+            rng_seed: RNG seed (None for non-deterministic).
+            verbose: Print progress lines during init (~10 s for the train split).
+            negative_sampling: "uniform" or "log_freq" — see module docstring.
+        """
         if negative_sampling not in ("uniform", "log_freq"):
             raise ValueError(f"negative_sampling must be 'uniform' or 'log_freq', got {negative_sampling!r}")
 
@@ -40,54 +57,59 @@ class TrainingPairsDataset(Dataset):
 
         t0 = time.time()
         log(f"[TrainingPairsDataset/{data_split}] loading id mappings...")
-        with open(DATA_DIR / "transformed" / "user_id_to_index.json", "r") as f:
+        with open(DATA_DIR / "transformed" / "user_id_to_index.json") as f:
             user_id_to_index = json.load(f)
-        with open(DATA_DIR / "transformed" / "book_id_to_index.json", "r") as f:
+        with open(DATA_DIR / "transformed" / "book_id_to_index.json") as f:
             book_id_to_index = json.load(f)
 
-        log(f"[TrainingPairsDataset/{data_split}] scanning interactions parquet... ({time.time()-t0:.1f}s)")
+        log(f"[TrainingPairsDataset/{data_split}] scanning interactions parquet... ({time.time() - t0:.1f}s)")
         interactions = (
             pl.scan_parquet(DATA_DIR / "transformed" / "training_interactions.parquet")
             .filter(pl.col("data_split") == data_split)
             .select("user_id", "book_id", "rating")
             .collect()
         )
-        log(f"[TrainingPairsDataset/{data_split}]   loaded {len(interactions):,} rows ({time.time()-t0:.1f}s)")
+        log(f"[TrainingPairsDataset/{data_split}]   loaded {len(interactions):,} rows ({time.time() - t0:.1f}s)")
 
-        log(f"[TrainingPairsDataset/{data_split}] mapping ids via polars join... ({time.time()-t0:.1f}s)")
-        user_map = pl.DataFrame({
-            "user_id": list(user_id_to_index.keys()),
-            "user_idx": list(user_id_to_index.values()),
-        }, schema={"user_id": pl.String, "user_idx": pl.Int64})
-        book_map = pl.DataFrame({
-            "book_id": list(book_id_to_index.keys()),
-            "book_idx": list(book_id_to_index.values()),
-        }, schema={"book_id": pl.String, "book_idx": pl.Int64})
+        log(f"[TrainingPairsDataset/{data_split}] mapping ids via polars join... ({time.time() - t0:.1f}s)")
+        user_map = pl.DataFrame(
+            {
+                "user_id": list(user_id_to_index.keys()),
+                "user_idx": list(user_id_to_index.values()),
+            },
+            schema={"user_id": pl.String, "user_idx": pl.Int64},
+        )
+        book_map = pl.DataFrame(
+            {
+                "book_id": list(book_id_to_index.keys()),
+                "book_idx": list(book_id_to_index.values()),
+            },
+            schema={"book_id": pl.String, "book_idx": pl.Int64},
+        )
 
         interactions = (
-            interactions
-            .with_columns(pl.col("book_id").cast(pl.String))
+            interactions.with_columns(pl.col("book_id").cast(pl.String))
             .join(user_map, on="user_id", how="left")
             .join(book_map, on="book_id", how="left")
             .filter(pl.col("user_idx").is_not_null() & pl.col("book_idx").is_not_null())
         )
-        log(f"[TrainingPairsDataset/{data_split}]   {len(interactions):,} rows after mapping ({time.time()-t0:.1f}s)")
+        log(f"[TrainingPairsDataset/{data_split}]   {len(interactions):,} rows after mapping ({time.time() - t0:.1f}s)")
 
-        log(f"[TrainingPairsDataset/{data_split}] extracting positives... ({time.time()-t0:.1f}s)")
+        log(f"[TrainingPairsDataset/{data_split}] extracting positives... ({time.time() - t0:.1f}s)")
         positives = interactions.filter(pl.col("rating") >= 4)
         self.positive_users = positives["user_idx"].to_numpy()
         self.positive_books = positives["book_idx"].to_numpy()
-        log(f"[TrainingPairsDataset/{data_split}]   {len(self.positive_users):,} positives ({time.time()-t0:.1f}s)")
+        log(f"[TrainingPairsDataset/{data_split}]   {len(self.positive_users):,} positives ({time.time() - t0:.1f}s)")
 
-        log(f"[TrainingPairsDataset/{data_split}] building per-user exclude sets... ({time.time()-t0:.1f}s)")
-        exclude_groups = (
-            interactions.group_by("user_idx").agg(pl.col("book_idx").alias("rated_books"))
-        )
+        log(f"[TrainingPairsDataset/{data_split}] building per-user exclude sets... ({time.time() - t0:.1f}s)")
+        exclude_groups = interactions.group_by("user_idx").agg(pl.col("book_idx").alias("rated_books"))
         self.exclude: dict[int, np.ndarray] = {
-            row["user_idx"]: np.array(row["rated_books"], dtype=np.int64)
-            for row in exclude_groups.to_dicts()
+            row["user_idx"]: np.array(row["rated_books"], dtype=np.int64) for row in exclude_groups.to_dicts()
         }
-        log(f"[TrainingPairsDataset/{data_split}]   {len(self.exclude):,} users in exclude dict ({time.time()-t0:.1f}s)")
+        log(
+            f"[TrainingPairsDataset/{data_split}]   {len(self.exclude):,} users in exclude "
+            f"dict ({time.time() - t0:.1f}s)"
+        )
 
         self.n_books = len(book_id_to_index)
         self.n_negatives = n_negatives
@@ -96,7 +118,7 @@ class TrainingPairsDataset(Dataset):
         self.neg_sampling_cdf: np.ndarray | None = None
 
         if negative_sampling == "log_freq":
-            log(f"[TrainingPairsDataset/{data_split}] computing log-frequency CDF... ({time.time()-t0:.1f}s)")
+            log(f"[TrainingPairsDataset/{data_split}] computing log-frequency CDF... ({time.time() - t0:.1f}s)")
             # Count interactions per book across this split. Popular books get higher weight.
             book_counts = np.bincount(
                 interactions["book_idx"].to_numpy().astype(np.int64),
@@ -115,15 +137,25 @@ class TrainingPairsDataset(Dataset):
                 f"[TrainingPairsDataset/{data_split}]   probs: "
                 f"min={probs.min():.2e} max={probs.max():.2e} "
                 f"ratio_top_to_median={probs.max() / np.median(probs):.1f}x "
-                f"({time.time()-t0:.1f}s)"
+                f"({time.time() - t0:.1f}s)"
             )
 
-        log(f"[TrainingPairsDataset/{data_split}] ready in {time.time()-t0:.1f}s")
+        log(f"[TrainingPairsDataset/{data_split}] ready in {time.time() - t0:.1f}s")
 
     def __len__(self) -> int:
+        """Return the number of positive anchors in this split."""
         return len(self.positive_users)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> tuple[int, int, np.ndarray]:
+        """Return one (user_idx, positive_book_idx, n_negatives book indices) anchor.
+
+        Args:
+            idx: Anchor index in 0..len(self)-1.
+
+        Returns:
+            Triple of (user_idx, positive_book_idx, sampled_negative_book_indices).
+            The negatives are freshly sampled per call.
+        """
         user_idx = int(self.positive_users[idx])
         pos_book_idx = int(self.positive_books[idx])
         neg_book_indices = self._sample_negatives(user_idx)
@@ -146,4 +178,4 @@ class TrainingPairsDataset(Dataset):
             if excluded is not None and len(excluded) > 0:
                 extra = extra[~np.isin(extra, excluded)]
             sampled = np.concatenate([sampled, extra])
-        return sampled[:self.n_negatives]
+        return sampled[: self.n_negatives]

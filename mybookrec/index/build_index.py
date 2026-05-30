@@ -1,8 +1,8 @@
 """Build a FAISS index of item embeddings from a trained checkpoint.
 
 Usage:
-    .venv/bin/python scripts/build_index.py checkpoints/two_tower_v4bce_best.pt
-    .venv/bin/python scripts/build_index.py <ckpt> --output checkpoints/book_index_v4.faiss
+    .venv/bin/python -m mybookrec.index.build_index checkpoints/two_tower_v4bce_best.pt
+    .venv/bin/python -m mybookrec.index.build_index <ckpt> --output checkpoints/book_index_v4.faiss
 """
 
 from __future__ import annotations

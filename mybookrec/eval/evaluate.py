@@ -3,8 +3,8 @@
 Reports Hit Rate @ K and NDCG @ K (leave-one-out, masking train-rated books).
 
 Usage:
-    .venv/bin/python scripts/evaluate.py checkpoints/two_tower_v4bce_best.pt
-    .venv/bin/python scripts/evaluate.py <ckpt> --k 10 --n-pairs 5000 --seed 0
+    .venv/bin/python -m mybookrec.eval.evaluate checkpoints/two_tower_v4bce_best.pt
+    .venv/bin/python -m mybookrec.eval.evaluate <ckpt> --k 10 --n-pairs 5000 --seed 0
 """
 
 from __future__ import annotations
