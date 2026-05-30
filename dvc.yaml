@@ -77,3 +77,50 @@ stages:
       - data/transformed/item_features_v4.npy
       - data/transformed/train_user_features_v4.npy
       - data/transformed/user_features_v4.npy
+
+  build_isbn_index:
+    # ISBN-13 → UCSD book_id lookup used by the v4 ingest path. One-off
+    # precompute that rarely changes (only on raw books dump refresh).
+    cmd: .venv/bin/python -m mybookrec.features.build_isbn_index
+    deps:
+      - data/raw/goodreads_books.json.gz
+      - mybookrec/features/build_isbn_index.py
+    outs:
+      - data/transformed/isbn13_to_book_id.json
+
+  # --- Ingest lane (bronze → silver → gold → FAISS refresh) ---
+  # Bronze is NOT a DVC stage — it's produced by interactive `ingest.cli fetch`
+  # or `bulk_openlibrary`, both of which depend on external network resources
+  # DVC can't track. The downstream stages below DO use bronze as a dep so
+  # silver/gold/refresh rebuild when new bronze shards land.
+
+  ingest_silver:
+    cmd: .venv/bin/python -m mybookrec.ingest.cli silver --source both
+    deps:
+      - data/bronze
+      - mybookrec/ingest/to_silver.py
+      - mybookrec/ingest/sources.py
+      - mybookrec/ingest/schemas.py
+      - mybookrec/ingest/openlibrary.py
+      - mybookrec/ingest/google_books.py
+      - mybookrec/ingest/bulk_openlibrary.py
+    outs:
+      - data/silver/books.parquet
+
+  ingest_gold_v4:
+    cmd: .venv/bin/python -m mybookrec.ingest.cli gold --feature-set v4
+    deps:
+      - data/silver/books.parquet
+      - data/transformed/isbn13_to_book_id.json
+      - data/transformed/author_embeddings.npy
+      - data/transformed/book_to_author_idx.npy
+      - data/transformed/book_id_to_index.json
+      - data/transformed/num_pages_norm_params.json
+      - mybookrec/features/genre_vocab.json
+      - mybookrec/ingest/to_gold.py
+      - mybookrec/ingest/author_lookup.py
+    outs:
+      - data/gold/books.parquet
+      - data/gold/embeddings.npy
+      - data/gold/item_features.npy
+      - data/gold/book_ids.json
