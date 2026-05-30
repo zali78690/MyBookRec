@@ -4,6 +4,7 @@ Picks a user with rich, varied ratings from books_with_interactions.parquet,
 joins with book metadata, writes the Goodreads export format, and runs the
 same transform the notebook does to produce my_books.csv.
 """
+
 from pathlib import Path
 
 import polars as pl
@@ -22,10 +23,7 @@ USER_ID = "096c015beb9e7c53bc3a48faeb80da8e"
 # only reads "Book Id" and "My Rating" anyway.
 user_books = (
     pl.scan_parquet(TRANSFORMED / "books_with_interactions.parquet")
-    .filter(
-        (pl.col("user_id") == USER_ID)
-        & (pl.col("rating") > 0)
-    )
+    .filter((pl.col("user_id") == USER_ID) & (pl.col("rating") > 0))
     .select(
         pl.col("book_id").cast(pl.Int64, strict=False),
         pl.col("rating").cast(pl.Int64).alias("my_rating"),
@@ -43,10 +41,7 @@ user_books = (
 if user_books.height == 0:
     user_books = (
         pl.scan_parquet(TRANSFORMED / "books_with_interactions.parquet")
-        .filter(
-            pl.col("user_id").str.starts_with(USER_ID[:32])
-            & (pl.col("rating") > 0)
-        )
+        .filter(pl.col("user_id").str.starts_with(USER_ID[:32]) & (pl.col("rating") > 0))
         .select(
             pl.col("book_id").cast(pl.Int64, strict=False),
             pl.col("rating").cast(pl.Int64).alias("my_rating"),

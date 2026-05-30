@@ -1,26 +1,12 @@
 ---
 name: code-reviewer
-description: Spawn the code-reviewer agent to review code for bugs, logic errors, security vulnerabilities, and quality issues. Pass optional args to specify scope (file path, git range, or description). Defaults to reviewing the current git diff.
+description: Dispatch the code-reviewer agent in the background to review code for bugs, logic errors, security vulnerabilities, and quality issues. Pass optional args to specify scope (file path, description). Defaults to current git diff.
 ---
 
-# Code Review
+Immediately dispatch the `code-reviewer` subagent using the Agent tool with `run_in_background: true`.
 
-Spawn the `code-reviewer` subagent using the Agent tool with `subagent_type: "code-reviewer"`.
+- `subagent_type`: "code-reviewer"
+- `prompt`: "$ARGS — if no scope provided, review the current git diff (run git diff HEAD to gather context)"
+- `run_in_background`: true
 
-## Prompt to pass
-
-Build a prompt from this template — fill in what you know, omit what you don't:
-
-```
-Review scope: {args if provided, otherwise "the current git diff (git diff HEAD)"}
-
-Context: {brief description of what changed or what to focus on, if known}
-
-Return a structured report grouped by severity (Critical / Important). Include file path, line number, confidence score, and a concrete fix suggestion for each finding. Skip issues below confidence 80.
-```
-
-## Steps
-
-1. If no args were passed, run `git diff HEAD` to understand what changed and use that as context.
-2. Spawn the agent: `Agent({ subagent_type: "code-reviewer", prompt: <filled template> })`
-3. Present the agent's findings to the user, preserving its structure.
+Do nothing else. Do not pre-process, read files, or build context yourself — the agent has full tool access and will gather what it needs. Respond only with a single line: "Code reviewer dispatched — you'll be notified when done."

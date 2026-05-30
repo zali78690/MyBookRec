@@ -1,39 +1,54 @@
-"""Train a two-tower model.
+"""Train a two-tower BCE model.
 
-Single entry point that handles both feature sets:
-- v1 (original): user 779-dim, item 395-dim. Loaded from train_user_features.npy + book_embeddings.npy + genre_matrix.npy + num_pages_normalized.npy.
-- v4 (with author): user 1163-dim, item 779-dim. Loaded from train_user_features_v4.npy + item_features_v4.npy.
-
-Auto-detects which feature set to use based on what's on disk (prefers v4 if present).
+Auto-detects which feature set (v1 vs v4) to use based on what's on disk.
+Override via --feature-set if you need to pin to a specific version.
 
 Usage:
-    uv run python scripts/train.py
-    uv run python scripts/train.py --time-budget 3600 --batch-size 1024 --feature-set v4
-    uv run python scripts/train.py --dropout 0.3 --weight-decay 1e-5
+    .venv/bin/python scripts/train.py
+    .venv/bin/python scripts/train.py --time-budget 3600 --feature-set v4
+    .venv/bin/python scripts/train.py --dropout 0.3 --weight-decay 1e-5
 """
+
 from __future__ import annotations
 
 import argparse
-import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
-import polars as pl
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from mybookrec import DATA_DIR
-from mybookrec.features.training_pairs import TrainingPairsDataset
-from mybookrec.model.towers import TwoTowerModel
 from mybookrec.eval.metrics import hit_rate_at_k, ndcg_at_k
+from mybookrec.features.training_pairs import TrainingPairsDataset
+from mybookrec.io import (
+    FEATURE_SETS,
+    batch_encode,
+    detect_available_feature_set,
+    load_features_for_checkpoint,
+    sample_test_pairs,
+    select_device,
+)
+from mybookrec.model.towers import TwoTowerModel
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the training run.
+
+    Returns:
+        argparse.Namespace with hyperparameters and run-control flags.
+    """
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--feature-set", choices=["auto", "v1", "v4"], default="auto",
-                   help="v4 (with author features) if available, fallback to v1.")
+    names = [fs.name for fs in FEATURE_SETS]
+    p.add_argument(
+        "--feature-set",
+        choices=["auto", *names],
+        default="auto",
+        help="Feature set name. 'auto' picks the latest available on disk.",
+    )
     p.add_argument("--hidden-dims", type=int, nargs="+", default=[512, 256, 128])
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument("--weight-decay", type=float, default=0.0)
@@ -47,94 +62,45 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-eval-pairs", type=int, default=4000)
     p.add_argument("--print-every", type=int, default=200)
     p.add_argument("--checkpoint-every", type=int, default=5000)
-    p.add_argument("--checkpoint-name", default="two_tower",
-                   help="Saved as <name>.pt (rolling) and <name>_best.pt (best HR@10).")
+    p.add_argument(
+        "--checkpoint-name", default="two_tower", help="Saved as <name>.pt (rolling) and <name>_best.pt (best HR@10)."
+    )
     return p.parse_args()
 
 
-def select_device() -> str:
-    if torch.backends.mps.is_available():
-        return "mps"
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
+def make_evaluator(
+    model: TwoTowerModel,
+    user_features: torch.Tensor,
+    item_features: torch.Tensor,
+    exclude_dict: dict[int, np.ndarray],
+    u_arr: np.ndarray,
+    u_t: torch.Tensor,
+    b_t: torch.Tensor,
+) -> Callable[[], tuple[float, float]]:
+    """Build a closure that evaluates HR@10 and NDCG@10 on a fixed test sample.
 
+    Args:
+        model: The two-tower model under training.
+        user_features: Full bulk-user feature matrix on the training device.
+        item_features: Full item feature matrix on the training device.
+        exclude_dict: Per-user array of train-rated book indices to mask.
+        u_arr: Numpy array of test user indices (for exclude dict lookup).
+        u_t: Same as u_arr but as a torch tensor on the training device.
+        b_t: Test book index torch tensor (held-out positives).
 
-def load_features(feature_set: str, device: str) -> tuple[torch.Tensor, torch.Tensor, str]:
-    """Returns (user_features, item_features, resolved_set)."""
-    t = DATA_DIR / "transformed"
-    v4_user = t / "train_user_features_v4.npy"
-    v4_item = t / "item_features_v4.npy"
+    Returns:
+        A no-arg callable returning (hr10, ndcg10).
+    """
 
-    if feature_set == "auto":
-        feature_set = "v4" if v4_user.exists() and v4_item.exists() else "v1"
-
-    if feature_set == "v4":
-        user_features = torch.from_numpy(np.load(v4_user)).to(device).float()
-        item_features = torch.from_numpy(np.load(v4_item)).to(device).float()
-    else:
-        user_features = torch.from_numpy(np.load(t / "train_user_features.npy")).to(device).float()
-        _emb = torch.from_numpy(np.load(t / "book_embeddings.npy")).to(device).float()
-        _genre = torch.from_numpy(np.load(t / "genre_matrix.npy")).to(device).float()
-        _pages = torch.from_numpy(np.load(t / "num_pages_normalized.npy")).to(device).float().reshape(-1, 1)
-        item_features = torch.cat([_emb, _genre, _pages], dim=1).contiguous()
-        del _emb, _genre, _pages
-
-    return user_features, item_features, feature_set
-
-
-def build_eval_sample(n_pairs: int, device: str) -> tuple[np.ndarray, np.ndarray, torch.Tensor, torch.Tensor]:
-    """Sample N held-out test pairs for periodic HR@10 evaluation."""
-    t = DATA_DIR / "transformed"
-    with open(t / "user_id_to_index.json") as f:
-        user_id_to_index = json.load(f)
-    with open(t / "book_id_to_index.json") as f:
-        book_id_to_index = json.load(f)
-
-    user_map = pl.DataFrame(
-        {"user_id": list(user_id_to_index.keys()), "user_idx": list(user_id_to_index.values())},
-        schema={"user_id": pl.String, "user_idx": pl.Int64},
-    )
-    book_map = pl.DataFrame(
-        {"book_id": list(book_id_to_index.keys()), "book_idx": list(book_id_to_index.values())},
-        schema={"book_id": pl.String, "book_idx": pl.Int64},
-    )
-
-    test_df = (
-        pl.scan_parquet(t / "training_interactions.parquet")
-        .filter(pl.col("data_split") == "test")
-        .select("user_id", "book_id", "rating")
-        .with_columns(pl.col("book_id").cast(pl.String))
-        .join(user_map.lazy(), on="user_id", how="left")
-        .join(book_map.lazy(), on="book_id", how="left")
-        .filter(pl.col("user_idx").is_not_null() & pl.col("book_idx").is_not_null())
-        .filter(pl.col("rating") >= 4)
-        .collect()
-    )
-
-    rng = np.random.default_rng(42)
-    sample = test_df[rng.choice(len(test_df), size=min(n_pairs, len(test_df)), replace=False)]
-    u_arr = sample["user_idx"].to_numpy()
-    b_arr = sample["book_idx"].to_numpy()
-    return u_arr, b_arr, torch.from_numpy(u_arr.copy()).to(device), torch.from_numpy(b_arr.copy()).to(device)
-
-
-def make_evaluator(model, user_features, item_features, exclude_dict, u_arr, u_t, b_t):
-    """Closure that evaluates HR@10 and NDCG@10 on the held-out sample."""
-    n_books = item_features.shape[0]
-
-    def evaluate():
+    def evaluate() -> tuple[float, float]:
         model.eval()
         with torch.no_grad():
-            item_embs = []
-            for i in range(0, n_books, 8192):
-                item_embs.append(model.encode_item(item_features[i:i + 8192]))
-            all_item_embs = torch.cat(item_embs, dim=0)
-            user_embs = model.encode_user(user_features[u_t])
+            all_item_embs = batch_encode(model.encode_item, item_features)
+            user_embs_eval = model.encode_user(user_features[u_t])
             hits, ndcgs = [], []
             for start in range(0, len(u_t), 64):
                 end = min(start + 64, len(u_t))
-                scores = user_embs[start:end] @ all_item_embs.T
+                scores = user_embs_eval[start:end] @ all_item_embs.T
                 for i in range(end - start):
                     excluded = exclude_dict.get(int(u_arr[start + i]))
                     if excluded is not None and len(excluded) > 0:
@@ -148,25 +114,55 @@ def make_evaluator(model, user_features, item_features, exclude_dict, u_arr, u_t
     return evaluate
 
 
-def save_checkpoint(path: Path, model, optimizer, config: dict, hr: float | None = None,
-                    ndcg: float | None = None, n_batches: int | None = None):
-    torch.save({
-        "model_state": model.state_dict(),
-        "optimizer_state": optimizer.state_dict(),
-        "val_hr10": hr,
-        "val_ndcg10": ndcg,
-        "n_batches_trained": n_batches,
-        "config": config,
-    }, path)
+def save_checkpoint(
+    path: Path,
+    model: TwoTowerModel,
+    optimizer: torch.optim.Optimizer,
+    config: dict,
+    hr: float | None = None,
+    ndcg: float | None = None,
+    n_batches: int | None = None,
+) -> None:
+    """Serialize a checkpoint containing model + optimizer state + config + metrics.
+
+    Args:
+        path: Output .pt path.
+        model: Model whose state_dict to save.
+        optimizer: Optimizer whose state_dict to save (for resuming).
+        config: Hyperparameter dict (used by `io.load_checkpoint` to re-instantiate).
+        hr: Optional held-out HR@10 metric at the time of save.
+        ndcg: Optional held-out NDCG@10 metric.
+        n_batches: How many batches the model has trained for.
+    """
+    torch.save(
+        {
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "val_hr10": hr,
+            "val_ndcg10": ndcg,
+            "n_batches_trained": n_batches,
+            "config": config,
+        },
+        path,
+    )
 
 
-def main():
+def main() -> None:
+    """Train the two-tower model with BCE + per-positive negative sampling."""
     args = parse_args()
     device = select_device()
     print(f"Device: {device}")
 
-    user_features, item_features, feature_set = load_features(args.feature_set, device)
-    print(f"Feature set: {feature_set}  user: {tuple(user_features.shape)}  item: {tuple(item_features.shape)}")
+    feature_set = (
+        detect_available_feature_set()
+        if args.feature_set == "auto"
+        else next(fs for fs in FEATURE_SETS if fs.name == args.feature_set)
+    )
+    user_features, item_features = load_features_for_checkpoint(
+        {"item_input_dim": feature_set.item_input_dim},
+        device,
+    )
+    print(f"Feature set: {feature_set.name}  user: {tuple(user_features.shape)}  item: {tuple(item_features.shape)}")
 
     train_dataset = TrainingPairsDataset(
         n_negatives=args.n_negatives,
@@ -177,7 +173,9 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=True)
     print(f"Dataset ready: {len(train_dataset):,} positives, {len(train_dataset.exclude):,} users")
 
-    u_arr, b_arr, u_t, b_t = build_eval_sample(args.n_eval_pairs, device)
+    u_arr, b_arr = sample_test_pairs(args.n_eval_pairs, seed=42)
+    u_t = torch.from_numpy(u_arr.copy()).to(device)
+    b_t = torch.from_numpy(b_arr.copy()).to(device)
     print(f"Eval sample: {len(u_arr):,} held-out (user, positive) pairs")
 
     model = TwoTowerModel(
@@ -191,7 +189,7 @@ def main():
     print(f"Model: {sum(p.numel() for p in model.parameters() if p.requires_grad):,} params")
 
     config = {
-        "feature_set": feature_set,
+        "feature_set": feature_set.name,
         "hidden_dims": list(args.hidden_dims),
         "dropout": args.dropout,
         "user_input_dim": user_features.shape[1],
@@ -210,10 +208,13 @@ def main():
 
     evaluate = make_evaluator(model, user_features, item_features, train_dataset.exclude, u_arr, u_t, b_t)
 
-    print(f"Training for up to {args.time_budget}s, eval every {args.eval_every_batches} batches, patience={args.patience}")
+    print(
+        f"Training for up to {args.time_budget}s, eval every {args.eval_every_batches} batches, "
+        f"patience={args.patience}"
+    )
     model.train()
     t_start = time.time()
-    losses = []
+    losses: list[float] = []
     last_eval = 0
     last_ckpt = 0
     best_hr = 0.0
@@ -233,9 +234,11 @@ def main():
 
         if batch_idx % args.print_every == 0:
             elapsed = time.time() - t_start
-            recent = sum(losses[-args.print_every:]) / args.print_every
-            print(f"batch {batch_idx:6d}  loss={recent:.4f}  temp={model.log_temperature.exp().item():.2f}  "
-                  f"rate={batch_idx / elapsed:.2f} b/s  elapsed={elapsed:.0f}s")
+            recent = sum(losses[-args.print_every :]) / args.print_every
+            print(
+                f"batch {batch_idx:6d}  loss={recent:.4f}  temp={model.log_temperature.exp().item():.2f}  "
+                f"rate={batch_idx / elapsed:.2f} b/s  elapsed={elapsed:.0f}s"
+            )
 
         if batch_idx - last_eval >= args.eval_every_batches:
             hr, ndcg = evaluate()
@@ -260,6 +263,8 @@ def main():
             print(f"Time budget reached at batch {batch_idx}")
             break
 
+    if batch_idx == 0:
+        raise RuntimeError("Training loop yielded zero batches — check dataset size and drop_last.")
     save_checkpoint(rolling_path, model, optimizer, config, n_batches=batch_idx)
     print(f"\nDone: {batch_idx} batches in {time.time() - t_start:.0f}s, best HR@10={best_hr:.4f}")
     print(f"Best checkpoint: {best_path}")
