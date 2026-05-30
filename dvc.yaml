@@ -1,0 +1,79 @@
+# Feature + training pipeline as a reproducible DAG.
+#
+# Each stage names its `cmd`, `deps` (inputs DVC hashes to detect change), and `outs`
+# (artifacts DVC will track). Re-running `dvc repro` only re-executes stages whose
+# inputs changed. Outputs are pushed to the configured remote with `dvc push`.
+#
+# Pure scaffolding for now — DVC won't run anything until the user picks up the
+# pipeline and does the initial `dvc repro` (which will hash the raw inputs and
+# version the artifacts). Stage dependencies were chosen to mirror the order in
+# README.md / plans/book-recommender-mvp-plan.md.
+
+stages:
+
+  transform_raw:
+    cmd: .venv/bin/python -m mybookrec.data_load.transform_raw
+    deps:
+      - data/raw/goodreads_books.json.gz
+      - data/raw/goodreads_book_genres_initial.json
+      - mybookrec/data_load/transform_raw.py
+    outs:
+      - data/transformed/books_with_genres.parquet
+      - data/transformed/books_with_interactions.parquet
+
+  build_training_interactions:
+    cmd: .venv/bin/python -m mybookrec.data_load.build_training_interactions
+    deps:
+      - data/transformed/books_with_interactions.parquet
+      - mybookrec/data_load/build_training_interactions.py
+    outs:
+      - data/transformed/training_interactions.parquet
+      - data/transformed/user_id_to_index.json
+      - data/transformed/book_id_to_index.json
+
+  build_item_features:
+    cmd: .venv/bin/python -m mybookrec.features.build_item_features
+    deps:
+      - data/transformed/books_with_genres.parquet
+      - mybookrec/features/build_item_features.py
+      - mybookrec/features/genre_vocab.json
+    outs:
+      - data/transformed/genre_matrix.npy
+      - data/transformed/num_pages_normalized.npy
+      - data/transformed/num_pages_norm_params.json
+
+  build_user_features:
+    cmd: .venv/bin/python -m mybookrec.features.build_user_features
+    deps:
+      - data/transformed/my_books.csv
+      - data/transformed/book_embeddings.npy
+      - data/transformed/genre_matrix.npy
+      - data/transformed/num_pages_normalized.npy
+      - mybookrec/features/build_user_features.py
+    outs:
+      - data/transformed/user_features.npy
+
+  build_train_user_features:
+    cmd: .venv/bin/python -m mybookrec.features.build_train_user_features
+    deps:
+      - data/transformed/training_interactions.parquet
+      - data/transformed/book_embeddings.npy
+      - data/transformed/genre_matrix.npy
+      - data/transformed/num_pages_normalized.npy
+      - mybookrec/features/build_train_user_features.py
+    outs:
+      - data/transformed/train_user_features.npy
+
+  build_author_features:
+    cmd: .venv/bin/python -m mybookrec.features.build_author_features
+    deps:
+      - data/transformed/books_with_genres.parquet
+      - data/transformed/book_embeddings.npy
+      - mybookrec/features/build_author_features.py
+    outs:
+      - data/transformed/author_embeddings.npy
+      - data/transformed/author_id_to_index.json
+      - data/transformed/book_to_author_idx.npy
+      - data/transformed/item_features_v4.npy
+      - data/transformed/train_user_features_v4.npy
+      - data/transformed/user_features_v4.npy
