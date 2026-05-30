@@ -1,0 +1,37 @@
+# Anything not needed inside the runtime image — keeps the build context small and
+# prevents accidentally baking secrets or local artifacts into the layer.
+
+.git
+.gitignore
+.github
+.venv
+.env
+.ruff_cache
+.pytest_cache
+.mypy_cache
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+
+# Heavy local artifacts — these are mounted as volumes at runtime, not baked in.
+data
+checkpoints
+notebooks
+plans
+scripts/embed.ipynb
+
+# Docs / development
+README.md
+LICENSE
+*.md
+tests
+.dvc
+.dvcignore
+dvc.yaml
+dvc.lock
+
+# IDE
+.vscode
+.idea
+*.swp

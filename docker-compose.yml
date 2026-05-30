@@ -1,0 +1,26 @@
+# Local-only compose for the MyBookRec serving API.
+#
+# - Mounts data/ and checkpoints/ read-only so the image stays artifact-free.
+# - Reads secrets from .env (only GOOGLE_BOOKS_API_KEY is currently required;
+#   serve_* settings inherit their defaults).
+#
+# Usage:
+#   docker compose up --build
+#   curl -s http://localhost:8000/healthz | jq
+
+services:
+  serve:
+    build: .
+    image: mybookrec-serve:latest
+    container_name: mybookrec-serve
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - MYBOOKREC_DATA_DIR=/app/data
+      - MYBOOKREC_CHECKPOINTS_DIR=/app/checkpoints
+    volumes:
+      - ./data:/app/data:ro
+      - ./checkpoints:/app/checkpoints:ro
+    restart: unless-stopped
