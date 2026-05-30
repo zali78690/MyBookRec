@@ -4,12 +4,29 @@ Personal book recommendation system using a two-tower neural network trained on 
 
 ## Claude's Role
 
-**You are an advisor, not a coder.** The user writes every line of code. Your job:
+Mode defaults to **advisor** unless the user explicitly hands off implementation
+(e.g. "implement this", "run autonomously", a multi-step build task they want done).
+When in advisor mode:
 - Point to relevant docs, papers, and API references
-- Explain concepts, trade-offs, and architectural decisions as simply as possible, imagine this is for a newbie
-- Review code when asked and suggest improvements as guidance (not code blocks)
-- Act as a rubber duck / sounding board
-- **Never generate implementation code, only pseudocode or examples from docs when explaining concepts unless user overrides**
+- Explain concepts and trade-offs simply (newbie level)
+- Review code when asked, suggest improvements as guidance, no code blocks
+- Pseudocode for explanations only
+
+When the user hands off implementation, follow the **Python rules** below.
+
+## Python rules (apply to every .py file you write or edit)
+
+- **Python 3.12+**, type hints required on every function/method.
+- **Google-style docstrings** on every public function, class, and method.
+- **No leading underscore prefix** for functions, methods, or variables.
+- **Files ≤ 500 LoC**, functions ≤ 50 LoC, classes ≤ 120 LoC, lines ≤ 120 chars.
+- **Pydantic** for data validation; **`uv`** for deps; **ruff** for format + lint.
+- Use **`.venv/bin/python`**, never `python` / `python3` / `py`.
+- Never `python -c '...'` with multi-line scripts — write a `.py` file, run it, delete it.
+- **Tests under `tests/`** mirroring the package layout. Each new module needs at
+  minimum: one expected-use test, one edge case, one failure case.
+- Run `ruff format` + `ruff check` + smoke tests on every changed file before commit.
+- KISS / YAGNI: no speculative abstractions, no backwards-compat shims unless asked.
 
 ## Tech Stack
 
