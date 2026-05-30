@@ -33,6 +33,7 @@ from mybookrec.io import (
     select_device,
 )
 from mybookrec.model.towers import TwoTowerModel
+from mybookrec.tracking import log_artifact, log_metric, track_run
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,6 +65,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint-every", type=int, default=5000)
     p.add_argument(
         "--checkpoint-name", default="two_tower", help="Saved as <name>.pt (rolling) and <name>_best.pt (best HR@10)."
+    )
+    p.add_argument(
+        "--mlflow-run-name",
+        default=None,
+        help="Override the MLflow run name. Defaults to '<checkpoint_name>_<feature_set>'.",
+    )
+    p.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow tracking for this run (useful for quick local experiments).",
     )
     return p.parse_args()
 
@@ -212,6 +223,83 @@ def main() -> None:
         f"Training for up to {args.time_budget}s, eval every {args.eval_every_batches} batches, "
         f"patience={args.patience}"
     )
+
+    run_name = args.mlflow_run_name or f"{args.checkpoint_name}_{feature_set.name}"
+    run_ctx = (
+        track_run(run_name=run_name, params={**config, "time_budget_s": args.time_budget})
+        if not args.no_mlflow
+        else NullRunContext()
+    )
+
+    with run_ctx:
+        best_hr = train_loop(
+            model=model,
+            optimizer=optimizer,
+            loss_fn=loss_fn,
+            train_loader=train_loader,
+            user_features=user_features,
+            item_features=item_features,
+            device=device,
+            evaluate=evaluate,
+            config=config,
+            args=args,
+            rolling_path=rolling_path,
+            best_path=best_path,
+            tracking_enabled=not args.no_mlflow,
+        )
+
+    print(f"\nDone: best HR@10={best_hr:.4f}")
+    print(f"Best checkpoint: {best_path}")
+
+
+class NullRunContext:
+    """No-op context manager used when --no-mlflow is set."""
+
+    def __enter__(self) -> None:
+        """Enter no-op context."""
+
+    def __exit__(self, *exc: object) -> None:
+        """Exit no-op context."""
+
+
+def train_loop(
+    model: TwoTowerModel,
+    optimizer: torch.optim.Optimizer,
+    loss_fn: nn.Module,
+    train_loader: DataLoader,
+    user_features: torch.Tensor,
+    item_features: torch.Tensor,
+    device: str,
+    evaluate: Callable[[], tuple[float, float]],
+    config: dict,
+    args: argparse.Namespace,
+    rolling_path: Path,
+    best_path: Path,
+    tracking_enabled: bool,
+) -> float:
+    """Run the training loop. Logs per-eval metrics to MLflow if enabled.
+
+    Args:
+        model: TwoTowerModel under training.
+        optimizer: Optimizer.
+        loss_fn: BCEWithLogitsLoss or equivalent.
+        train_loader: DataLoader over the training pairs dataset.
+        user_features: Full bulk-user feature tensor on the training device.
+        item_features: Full item feature tensor on the training device.
+        device: Torch device string (only used for tensor moves).
+        evaluate: Closure returning (hr10, ndcg10).
+        config: Hyperparameter dict (saved into checkpoints).
+        args: Parsed CLI args.
+        rolling_path: Where to write the rolling (every-N-batches) checkpoint.
+        best_path: Where to write the best-HR@10 checkpoint.
+        tracking_enabled: If True, push metrics through `mybookrec.tracking`.
+
+    Returns:
+        Best HR@10 observed during training.
+
+    Raises:
+        RuntimeError: If the loader yields zero batches.
+    """
     model.train()
     t_start = time.time()
     losses: list[float] = []
@@ -239,10 +327,16 @@ def main() -> None:
                 f"batch {batch_idx:6d}  loss={recent:.4f}  temp={model.log_temperature.exp().item():.2f}  "
                 f"rate={batch_idx / elapsed:.2f} b/s  elapsed={elapsed:.0f}s"
             )
+            if tracking_enabled:
+                log_metric("train_loss", recent, step=batch_idx)
+                log_metric("train_temperature", model.log_temperature.exp().item(), step=batch_idx)
 
         if batch_idx - last_eval >= args.eval_every_batches:
             hr, ndcg = evaluate()
             print(f"  EVAL batch={batch_idx}  hr@10={hr:.4f}  ndcg@10={ndcg:.4f}  best={best_hr:.4f}")
+            if tracking_enabled:
+                log_metric("val_hr10", hr, step=batch_idx)
+                log_metric("val_ndcg10", ndcg, step=batch_idx)
             last_eval = batch_idx
             if hr > best_hr:
                 best_hr = hr
@@ -266,8 +360,13 @@ def main() -> None:
     if batch_idx == 0:
         raise RuntimeError("Training loop yielded zero batches — check dataset size and drop_last.")
     save_checkpoint(rolling_path, model, optimizer, config, n_batches=batch_idx)
-    print(f"\nDone: {batch_idx} batches in {time.time() - t_start:.0f}s, best HR@10={best_hr:.4f}")
-    print(f"Best checkpoint: {best_path}")
+    if tracking_enabled:
+        log_metric("best_val_hr10", best_hr)
+        log_metric("total_batches", float(batch_idx))
+        log_metric("total_train_time_s", time.time() - t_start)
+        if best_path.exists():
+            log_artifact(best_path, artifact_path="checkpoints")
+    return best_hr
 
 
 if __name__ == "__main__":
