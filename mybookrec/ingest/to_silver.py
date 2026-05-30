@@ -16,7 +16,7 @@ from pathlib import Path
 
 import polars as pl
 
-from mybookrec.ingest import google_books, openlibrary
+from mybookrec.ingest import bulk_openlibrary, google_books, openlibrary
 from mybookrec.ingest.schemas import SilverBook
 from mybookrec.settings import get_settings
 
@@ -57,6 +57,12 @@ def collect_silver_from_bronze(source: str | None = None) -> list[SilverBook]:
     if source in (None, "openlibrary"):
         for f in sorted(bronze_root.glob("openlibrary/**/*.jsonl")):
             books.extend(openlibrary.to_silver(read_jsonl(f)))
+
+    if source in (None, "openlibrary_dump"):
+        # Bulk-dump shards have a different record shape (subjects, no ISBN, author keys
+        # instead of names) — see bulk_openlibrary.adapt_work.
+        for f in sorted(bronze_root.glob("openlibrary_dump/**/works_*.jsonl")):
+            books.extend(bulk_openlibrary.to_silver(read_jsonl(f)))
 
     if source in (None, "google_books"):
         for f in sorted(bronze_root.glob("google_books/**/*.jsonl")):
