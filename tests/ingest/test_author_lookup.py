@@ -5,7 +5,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mybookrec.ingest.author_lookup import AuthorEmbeddingLookup
+from mybookrec.ingest.author_lookup import (
+    AuthorEmbeddingLookup,
+    author_key,
+    compute_batch_author_means,
+)
 from mybookrec.ingest.schemas import SilverBook
 
 
@@ -70,8 +74,8 @@ def test_self_fallback_when_nothing_else_matches(lookup: AuthorEmbeddingLookup) 
     assert np.allclose(emb, [0.1, 0.2, 0.3])
 
 
-def test_build_batch_means_excludes_singletons(lookup: AuthorEmbeddingLookup) -> None:
-    """Edge case: batch_means only includes authors with ≥2 books in the batch."""
+def test_compute_batch_author_means_excludes_singletons() -> None:
+    """Edge case: by default, only authors with ≥2 books in the batch contribute a mean."""
     silver_books = [
         make_silver(None, "Author A"),
         make_silver(None, "Author A"),
@@ -85,10 +89,24 @@ def test_build_batch_means_excludes_singletons(lookup: AuthorEmbeddingLookup) ->
         ],
         dtype=np.float32,
     )
-    means = AuthorEmbeddingLookup.build_batch_means(silver_books, embeddings)
+    means = compute_batch_author_means(silver_books, embeddings)
     assert "author a" in means
-    assert "author b" not in means  # singleton dropped
+    assert "author b" not in means
     assert np.allclose(means["author a"], [0.5, 0.5, 0.0])
+
+
+def test_compute_batch_author_means_threshold_is_tunable() -> None:
+    """Expected use: lowering min_books_per_author=1 keeps singletons too."""
+    books = [make_silver(None, "Solo Author")]
+    embeddings = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)
+    means = compute_batch_author_means(books, embeddings, min_books_per_author=1)
+    assert "solo author" in means
+
+
+def test_author_key_normalises_case_and_whitespace() -> None:
+    """Expected use: author keys are lowercased and trimmed for consistent grouping."""
+    assert author_key(make_silver(None, "  Brandon Sanderson ")) == "brandon sanderson"
+    assert author_key(make_silver(None, None)) is None
 
 
 def test_trained_embedding_returns_none_for_unknown_isbn(lookup: AuthorEmbeddingLookup) -> None:

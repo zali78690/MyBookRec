@@ -16,8 +16,8 @@ from pathlib import Path
 
 import polars as pl
 
-from mybookrec.ingest import bulk_openlibrary, google_books, openlibrary
 from mybookrec.ingest.schemas import SilverBook
+from mybookrec.ingest.sources import filter_sources
 from mybookrec.settings import get_settings
 
 
@@ -42,32 +42,22 @@ def read_jsonl(path: Path) -> Iterable[dict]:
 
 
 def collect_silver_from_bronze(source: str | None = None) -> list[SilverBook]:
-    """Walk the bronze tree and return all SilverBook records produced by the matching adapters.
+    """Walk the bronze tree and return all SilverBook records produced by matching sources.
+
+    Iterates the source registry — `mybookrec.ingest.sources.SOURCES` — instead of
+    hard-coding per-source branches. Adding source #4 is one registry entry, no edit here.
 
     Args:
-        source: Restrict to one source ("openlibrary" or "google_books"); None = both.
+        source: Registered source name (e.g. "openlibrary"), or None to merge all.
 
     Returns:
         Flat list of SilverBook records (may contain cross-source duplicates).
     """
-    settings = get_settings()
-    bronze_root = settings.bronze_dir
+    bronze_root = get_settings().bronze_dir
     books: list[SilverBook] = []
-
-    if source in (None, "openlibrary"):
-        for f in sorted(bronze_root.glob("openlibrary/**/*.jsonl")):
-            books.extend(openlibrary.to_silver(read_jsonl(f)))
-
-    if source in (None, "openlibrary_dump"):
-        # Bulk-dump shards have a different record shape (subjects, no ISBN, author keys
-        # instead of names) — see bulk_openlibrary.adapt_work.
-        for f in sorted(bronze_root.glob("openlibrary_dump/**/works_*.jsonl")):
-            books.extend(bulk_openlibrary.to_silver(read_jsonl(f)))
-
-    if source in (None, "google_books"):
-        for f in sorted(bronze_root.glob("google_books/**/*.jsonl")):
-            books.extend(google_books.to_silver(read_jsonl(f)))
-
+    for spec in filter_sources(source):
+        for path in sorted(bronze_root.glob(spec.bronze_glob)):
+            books.extend(spec.to_silver(read_jsonl(path)))
     return books
 
 

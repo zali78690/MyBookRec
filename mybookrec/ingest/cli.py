@@ -67,8 +67,9 @@ def cmd_fetch(args: argparse.Namespace) -> None:
 
 
 def cmd_silver(args: argparse.Namespace) -> None:
-    """Parse all bronze JSONLs, dedupe, write silver parquet."""
-    out, n = to_silver.run(source=args.source if args.source != "both" else None)
+    """Parse all bronze JSONLs (or one source), dedupe, write silver parquet."""
+    source = None if args.source == "both" else args.source
+    out, n = to_silver.run(source=source)
     print(f"[silver] {n:,} unique books → {out}")
 
 
@@ -103,11 +104,14 @@ def parse_args() -> argparse.Namespace:
     p_fetch.add_argument("--limit", type=int, default=40)
     p_fetch.set_defaults(func=cmd_fetch)
 
+    from mybookrec.ingest.sources import source_names
+
     p_silver = sub.add_parser("silver", help="Bronze → silver: parse, dedupe, write parquet.")
     p_silver.add_argument(
         "--source",
-        choices=["openlibrary", "openlibrary_dump", "google_books", "both"],
+        choices=[*source_names(), "both"],
         default="both",
+        help="Restrict to one registered source, or 'both' for all.",
     )
     p_silver.set_defaults(func=cmd_silver)
 
