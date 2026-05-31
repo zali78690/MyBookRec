@@ -27,11 +27,12 @@ import polars as pl
 from scipy.sparse import csr_matrix
 
 from mybookrec import DATA_DIR
+from mybookrec.settings import get_settings
 
 t_total = time.time()
 shared = DATA_DIR / "transformed" / "shared"
-minilm = DATA_DIR / "transformed" / "v1_minilm"
-minilm.mkdir(parents=True, exist_ok=True)
+model_run_dir = DATA_DIR / "transformed" / get_settings().embed_model_run
+model_run_dir.mkdir(parents=True, exist_ok=True)
 
 
 def log(msg: str) -> None:
@@ -85,7 +86,7 @@ np.save(shared / "book_to_author_idx.npy", book_to_author_idx)
 # Step 4: author embedding = mean of book embeddings written by this author.
 # Sparse matmul: (n_authors x n_books) @ (n_books x 384) → sum, divide by per-author book count.
 log("Loading book embeddings...")
-book_embeddings = np.load(minilm / "book_embeddings.npy").astype(np.float32)
+book_embeddings = np.load(model_run_dir / "book_embeddings.npy").astype(np.float32)
 embed_dim = book_embeddings.shape[1]
 log(f"book_embeddings: {book_embeddings.shape} {book_embeddings.dtype}")
 
@@ -108,7 +109,7 @@ log(
     f"  books-per-author distribution: mean={author_book_count.mean():.1f} "
     f"median={np.median(author_book_count):.0f} max={author_book_count.max():.0f}"
 )
-np.save(minilm / "author_embeddings.npy", author_embeddings)
+np.save(model_run_dir / "author_embeddings.npy", author_embeddings)
 
 # Step 5: item_features_v4 = [book_emb | genre | pages | author_emb].
 # Books with no author get a zero author embedding (no signal).
@@ -124,7 +125,7 @@ item_features = np.concatenate(
     axis=1,
 ).astype(np.float32)
 log(f"item_features (with author): {item_features.shape}")
-np.save(minilm / "item_features.npy", item_features)
+np.save(model_run_dir / "item_features.npy", item_features)
 
 # Step 6: append author_taste to bulk user features.
 # author_taste[u] = rating-weighted mean of book_author_emb over u's 4+ star books.
@@ -174,7 +175,7 @@ log(f"author_taste: {author_taste.shape}")
 # was built from these same interactions with user_idx in [0, n_old), so the index spaces
 # line up and we can concat row-by-row.
 log("Loading existing train_user_features and concatenating author_taste...")
-old_train_user_features = np.load(minilm / "train_user_features_basic.npy").astype(np.float32)
+old_train_user_features = np.load(model_run_dir / "train_user_features_basic.npy").astype(np.float32)
 log(f"old_train_user_features: {old_train_user_features.shape}, recomputed author_taste: {author_taste.shape}")
 assert author_taste.shape[0] == old_train_user_features.shape[0], (
     f"row mismatch: author_taste has {author_taste.shape[0]} users, old has {old_train_user_features.shape[0]}"
@@ -182,7 +183,7 @@ assert author_taste.shape[0] == old_train_user_features.shape[0], (
 
 train_user_features = np.concatenate([old_train_user_features, author_taste], axis=1).astype(np.float32)
 log(f"train_user_features (with author): {train_user_features.shape}")
-np.save(minilm / "train_user_features.npy", train_user_features)
+np.save(model_run_dir / "train_user_features.npy", train_user_features)
 
 # Step 7: personal user features v4 (same rating-weighted mean, single row).
 log("Building personal user features (with author)...")
@@ -201,10 +202,10 @@ if liked_personal.sum() > 0:
 else:
     personal_author_taste = np.zeros(embed_dim, dtype=np.float32)
 
-old_user_features = np.load(minilm / "user_features_basic.npy").astype(np.float32)
+old_user_features = np.load(model_run_dir / "user_features_basic.npy").astype(np.float32)
 user_features = np.concatenate([old_user_features, personal_author_taste], axis=0).astype(np.float32)
 log(f"personal user_features (with author): {user_features.shape}")
-np.save(minilm / "user_features.npy", user_features)
+np.save(model_run_dir / "user_features.npy", user_features)
 
 log("DONE")
 log(f"Total time: {time.time() - t_total:.0f}s")

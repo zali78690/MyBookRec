@@ -22,6 +22,7 @@ import polars as pl
 from scipy.sparse import csr_matrix
 
 from mybookrec import DATA_DIR
+from mybookrec.settings import get_settings
 
 
 def load_item_side() -> tuple[dict[str, int], np.ndarray, np.ndarray, np.ndarray]:
@@ -31,11 +32,11 @@ def load_item_side() -> tuple[dict[str, int], np.ndarray, np.ndarray, np.ndarray
         Tuple of (book_id_to_index, book_embeddings, genre_matrix, pages_vec).
     """
     shared = DATA_DIR / "transformed" / "shared"
-    minilm = DATA_DIR / "transformed" / "v1_minilm"
+    model_run = DATA_DIR / "transformed" / get_settings().embed_model_run
     with open(shared / "book_id_to_index.json") as f:
         book_id_to_index = json.load(f)
 
-    book_embeddings = np.load(minilm / "book_embeddings.npy").astype(np.float32)
+    book_embeddings = np.load(model_run / "book_embeddings.npy").astype(np.float32)
     genre_matrix = np.load(shared / "genre_matrix.npy").astype(np.float32)
     pages_vec = np.load(shared / "num_pages_normalized.npy").astype(np.float32)
     print(
@@ -272,9 +273,9 @@ def main() -> None:
     compact_id_map = {unique_users[old_idx]: new_idx for new_idx, old_idx in enumerate(valid_old_indices)}
 
     shared = DATA_DIR / "transformed" / "shared"
-    minilm = DATA_DIR / "transformed" / "v1_minilm"
-    minilm.mkdir(parents=True, exist_ok=True)
-    np.save(minilm / "train_user_features_basic.npy", user_features)
+    model_run = DATA_DIR / "transformed" / get_settings().embed_model_run
+    model_run.mkdir(parents=True, exist_ok=True)
+    np.save(model_run / "train_user_features_basic.npy", user_features)
     with open(shared / "user_id_to_index.json", "w") as f:
         json.dump(compact_id_map, f)
 

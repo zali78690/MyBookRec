@@ -58,8 +58,12 @@ class FeatureSet:
 
 
 # Paths are relative to `data/transformed/`. The two-segment leading dir encodes both the
-# embedding-model run (`v1_minilm`) and whether the artifact is model-independent (`shared/`)
-# — see plans/book-recommender-mvp-plan.md for the full layout.
+# embedding-model run (`v1_minilm`, `v2_mxbai`, ...) and whether the artifact is
+# model-independent (`shared/`) — see plans/book-recommender-mvp-plan.md for the full layout.
+#
+# Naming convention: <embedding_model>_<feature_variant>. `_basic` = no author features;
+# unsuffixed = with author. Item dims for v2_mxbai assume embed_dim=512 (mxbai Matryoshka-
+# truncated). If you change `embed_dim` in settings, regenerate the FeatureSet entries here.
 FEATURE_SETS: tuple[FeatureSet, ...] = (
     FeatureSet(
         name="minilm_basic",
@@ -80,6 +84,28 @@ FEATURE_SETS: tuple[FeatureSet, ...] = (
         bulk_user_npy="v1_minilm/train_user_features.npy",
         personal_user_npy="v1_minilm/user_features.npy",
         item_files=("v1_minilm/item_features.npy",),
+    ),
+    FeatureSet(
+        name="mxbai_basic",
+        # 512 (embed) + 10 (genre) + 1 (pages) = 523 item; +512 (dislike) = 1035 user.
+        user_input_dim=1035,
+        item_input_dim=523,
+        bulk_user_npy="v2_mxbai/train_user_features_basic.npy",
+        personal_user_npy="v2_mxbai/user_features_basic.npy",
+        item_files=(
+            "v2_mxbai/book_embeddings.npy",
+            "shared/genre_matrix.npy",
+            "shared/num_pages_normalized.npy",
+        ),
+    ),
+    FeatureSet(
+        name="mxbai_author",
+        # 523 (basic item) + 512 (author emb) = 1035 item; 1035 (basic user) + 512 (author taste) = 1547 user.
+        user_input_dim=1547,
+        item_input_dim=1035,
+        bulk_user_npy="v2_mxbai/train_user_features.npy",
+        personal_user_npy="v2_mxbai/user_features.npy",
+        item_files=("v2_mxbai/item_features.npy",),
     ),
 )
 

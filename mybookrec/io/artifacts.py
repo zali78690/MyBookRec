@@ -49,7 +49,6 @@ BOOKS_META_COLUMNS: tuple[str, ...] = (
 )
 
 
-DEFAULT_MODEL_RUN = "v1_minilm"
 SHARED_SUBDIR = "shared"
 
 
@@ -65,20 +64,23 @@ class TransformedArtifacts:
                      genre matrix, page norms, books_with_genres, ...).
       <model_run>/ — embedding-model-specific artifacts (book_embeddings,
                      author_embeddings, item_features, user_features, ...).
-                     Defaults to "v1_minilm"; pass `model_run="v2_mxbai"` once
-                     the mxbai pass completes.
+                     Defaults to `settings.embed_model_run` ("v1_minilm" out
+                     of the box; flip to "v2_mxbai" via env to swap runs).
     """
 
-    def __init__(self, base_dir: Path, model_run: str = DEFAULT_MODEL_RUN) -> None:
+    def __init__(self, base_dir: Path, model_run: str | None = None) -> None:
         """Bind to a transformed-data root + an embedding-model run.
 
         Args:
             base_dir: Usually `settings.transformed_dir`. Tests pass a tmp_path.
             model_run: Name of the embedding-model run subdirectory (e.g.
                 "v1_minilm", "v2_mxbai"). Resolved relative to `base_dir`.
+                When None, reads `settings.embed_model_run`.
         """
+        from mybookrec.settings import get_settings
+
         self.base_dir = Path(base_dir)
-        self.model_run = model_run
+        self.model_run = model_run if model_run is not None else get_settings().embed_model_run
 
     def path(self, filename: str) -> Path:
         """Resolve an artifact's path without loading it.

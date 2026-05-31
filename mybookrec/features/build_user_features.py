@@ -17,6 +17,7 @@ import numpy as np
 import polars as pl
 
 from mybookrec import DATA_DIR
+from mybookrec.settings import get_settings
 
 
 def load_inputs() -> tuple[pl.DataFrame, dict[str, int], np.ndarray, np.ndarray, np.ndarray]:
@@ -26,13 +27,13 @@ def load_inputs() -> tuple[pl.DataFrame, dict[str, int], np.ndarray, np.ndarray,
         Tuple of (my_books csv, book_id→idx map, book_embeddings, genre_matrix, pages_vec).
     """
     shared = DATA_DIR / "transformed" / "shared"
-    minilm = DATA_DIR / "transformed" / "v1_minilm"
+    model_run = DATA_DIR / "transformed" / get_settings().embed_model_run
 
     my_books = pl.read_csv(shared / "my_books.csv")
     with open(shared / "book_id_to_index.json") as f:
         book_id_to_index = json.load(f)
 
-    book_embeddings = np.load(minilm / "book_embeddings.npy")
+    book_embeddings = np.load(model_run / "book_embeddings.npy")
     genre_matrix = np.load(shared / "genre_matrix.npy")
     pages_vec = np.load(shared / "num_pages_normalized.npy")
 
@@ -179,7 +180,7 @@ def main() -> None:
     assert user_features.shape == (expected_dim,), f"Expected ({expected_dim},), got {user_features.shape}"
     assert not np.isnan(user_features).any(), "NaNs in user_features — check upstream"
 
-    output = DATA_DIR / "transformed" / "v1_minilm" / "user_features_basic.npy"
+    output = DATA_DIR / "transformed" / get_settings().embed_model_run / "user_features_basic.npy"
     output.parent.mkdir(parents=True, exist_ok=True)
     np.save(output, user_features)
     print(f"Saved user_features {user_features.shape} to {output.relative_to(DATA_DIR.parent)}")

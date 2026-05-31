@@ -59,6 +59,15 @@ class Settings(BaseSettings):
             "512 is the sweet spot for mxbai: ~98% of the 1024-dim quality at half the size."
         ),
     )
+    embed_model_run: str = Field(
+        default="v1_minilm",
+        description=(
+            "Subdirectory under data/transformed/ that holds the active embedding-model artifacts "
+            "(book_embeddings, author_embeddings, item_features, user_features, train_user_features). "
+            "Flip to 'v2_mxbai' after the mxbai Colab pass completes — all feature builders + "
+            "TransformedArtifacts honour this without code changes."
+        ),
+    )
 
     # ----- experiment tracking (MLflow) -----
     mlflow_tracking_uri: str = Field(
