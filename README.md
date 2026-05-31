@@ -23,12 +23,25 @@ mybookrec/
 
 tests/                     Pytest suite (mirrors the package layout)
 data/
-├── raw/                   UCSD source files (DVC-tracked)
-├── transformed/           Cleaned parquets + .npy artifacts (DVC-tracked)
-├── bronze/                Immutable raw API responses (date-partitioned JSONL)
-├── silver/                Cleaned schema-aligned book parquets
-└── gold/                  Embeddings + feature vectors ready for FAISS
-checkpoints/               .pt model + .faiss index artifacts
+├── raw/                                  Raw source files (DVC-tracked)
+│   ├── ucsd/                             UCSD Goodreads scrape (books, interactions, genres)
+│   ├── openlibrary/                      OL bulk dumps (works dump)
+│   └── personal/                         Personal Goodreads CSV export
+├── transformed/                          Cleaned parquets + .npy artifacts (DVC-tracked)
+│   ├── shared/                           Model-independent (id maps, genre matrix,
+│   │                                       books_with_genres, training_interactions,
+│   │                                       isbn index, my_books, embedding_input)
+│   ├── v1_minilm/                        MiniLM-384 embeddings + downstream features
+│   │                                       (book_embeddings, author_embeddings,
+│   │                                       item_features, user_features, ...)
+│   └── v2_mxbai/                         mxbai-512 — created when MPNet/mxbai pass completes
+├── bronze/                               Immutable raw API responses (date-partitioned JSONL)
+│   ├── openlibrary/<date>/               Per-query Open Library Search fetches
+│   ├── openlibrary_dump/<tag>/           OL bulk-dump shards
+│   └── google_books/<date>/              Google Books fetches
+├── silver/                               Cleaned schema-aligned book parquets
+└── gold/                                 Embeddings + feature vectors ready for FAISS
+checkpoints/                              .pt model + .faiss index artifacts
 ```
 
 ## Setup

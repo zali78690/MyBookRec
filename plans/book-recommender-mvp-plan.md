@@ -204,6 +204,40 @@ Concrete next steps in [v3-overhaul-deferred-items.md](v3-overhaul-deferred-item
 
 Skipped entirely: dislike genre vector, inverse-rating dislike weighting, book-to-book similarity, MLflow, `IndexIVFFlat`, multi-user serving, Pydantic config.
 
+## Data layout (versioned)
+
+`data/` is gitignored + DVC-tracked. Organised so it's obvious what came from where
+and which embedding-model run an artifact belongs to.
+
+```
+data/
+├── raw/
+│   ├── ucsd/             goodreads_{books,interactions_dedup,book_genres_initial}.json[.gz]
+│   ├── openlibrary/      ol_dump_works_latest.txt.gz
+│   └── personal/         goodreads_library_export.csv
+├── bronze/
+│   ├── openlibrary/<date>/           per-query Search fetches
+│   ├── openlibrary_dump/<tag>/       bulk-dump shards
+│   └── google_books/<date>/          per-query Books fetches
+├── silver/books.parquet              cleaned + cross-source deduped
+├── gold/{books.parquet, embeddings.npy, item_features.npy, book_ids.json}
+└── transformed/
+    ├── shared/                       model-independent: id maps, genre matrix,
+    │                                 page norms, books_with_genres,
+    │                                 training_interactions, my_books,
+    │                                 isbn13_to_book_id, author_id_to_index,
+    │                                 book_to_author_idx, embedding_input
+    ├── v1_minilm/                    MiniLM-384: book_embeddings, author_embeddings,
+    │                                 item_features (with author), user_features,
+    │                                 train_user_features, *_basic variants
+    └── v2_mxbai/                     placeholder for the mxbai-512 run
+```
+
+Code never hardcodes a filename: shared paths go through `TransformedArtifacts`
+(under `shared/`) and per-model paths go through the `model_run` constructor arg
+(default `v1_minilm`). When the mxbai pass completes, point `TransformedArtifacts`
+at `v2_mxbai` and downstream code keeps working.
+
 ## Project structure
 
 `mybookrec/` is the library. Every `.py` module is importable AND runnable via `python -m mybookrec.<dotted.path>`. `scripts/` contains only things that aren't naturally part of the library.
