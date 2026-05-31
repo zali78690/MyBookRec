@@ -4,6 +4,15 @@ One module owns the on-disk filenames + deserialisation conventions for the
 artifacts the training pipeline produces. Callers (serve, recommend, ingest,
 eval) stop knowing filenames; they ask the registry for a named artifact.
 
+Layout the loaders point at (see plans/book-recommender-mvp-plan.md):
+
+  data/transformed/
+  ├── shared/        # model-independent: id mappings, books_with_genres,
+  │                  # training_interactions, genre matrix, page norms,
+  │                  # author lookups, isbn index, my_books, embedding_input
+  └── v1_minilm/     # MiniLM-384 embeddings + downstream features
+                     # (future v2_mxbai/ when the mxbai pass completes)
+
 Each loader is a `functools.cached_property`, so:
 - The first access pays the IO cost (JSON parse, np.load).
 - Subsequent accesses on the same instance are free.
@@ -40,39 +49,72 @@ BOOKS_META_COLUMNS: tuple[str, ...] = (
 )
 
 
+DEFAULT_MODEL_RUN = "v1_minilm"
+SHARED_SUBDIR = "shared"
+
+
 class TransformedArtifacts:
     """Lazy loader for every file the training pipeline writes to data/transformed/.
 
     Constructor is cheap; properties load on first access and cache thereafter.
     Inject this into modules that need artifacts so they don't need to know
     filenames or how each artifact deserialises.
+
+    Two subdirs:
+      shared/      — files independent of the embedding model (id mappings,
+                     genre matrix, page norms, books_with_genres, ...).
+      <model_run>/ — embedding-model-specific artifacts (book_embeddings,
+                     author_embeddings, item_features, user_features, ...).
+                     Defaults to "v1_minilm"; pass `model_run="v2_mxbai"` once
+                     the mxbai pass completes.
     """
 
-    def __init__(self, base_dir: Path) -> None:
-        """Bind to a transformed-data root directory.
+    def __init__(self, base_dir: Path, model_run: str = DEFAULT_MODEL_RUN) -> None:
+        """Bind to a transformed-data root + an embedding-model run.
 
         Args:
             base_dir: Usually `settings.transformed_dir`. Tests pass a tmp_path.
+            model_run: Name of the embedding-model run subdirectory (e.g.
+                "v1_minilm", "v2_mxbai"). Resolved relative to `base_dir`.
         """
         self.base_dir = Path(base_dir)
+        self.model_run = model_run
 
     def path(self, filename: str) -> Path:
         """Resolve an artifact's path without loading it.
 
+        Filenames containing a `/` are treated as already-qualified (relative
+        to `base_dir`) — useful for callers that want to point at a specific
+        subdir. Bare filenames resolve under `shared/`.
+
         Args:
-            filename: Name relative to the transformed root (e.g. "book_id_to_index.json").
+            filename: A bare filename ("book_id_to_index.json") or a path
+                relative to base_dir ("v1_minilm/book_embeddings.npy").
 
         Returns:
             Absolute path under `base_dir`.
         """
-        return self.base_dir / filename
+        if "/" in filename:
+            return self.base_dir / filename
+        return self.base_dir / SHARED_SUBDIR / filename
+
+    def model_path(self, filename: str) -> Path:
+        """Resolve a path under the current `model_run` subdir.
+
+        Args:
+            filename: Bare filename like "book_embeddings.npy".
+
+        Returns:
+            Absolute path under `base_dir/<model_run>/`.
+        """
+        return self.base_dir / self.model_run / filename
 
     @cached_property
     def book_id_to_index(self) -> dict[str, int]:
         """UCSD book_id string → row index in the item matrices.
 
         Returns:
-            Mapping loaded from data/transformed/book_id_to_index.json.
+            Mapping loaded from shared/book_id_to_index.json.
         """
         return load_json(self.path("book_id_to_index.json"))
 
@@ -81,7 +123,7 @@ class TransformedArtifacts:
         """UCSD user_id string → row index in the bulk user matrix.
 
         Returns:
-            Mapping loaded from data/transformed/user_id_to_index.json.
+            Mapping loaded from shared/user_id_to_index.json.
         """
         return load_json(self.path("user_id_to_index.json"))
 
@@ -101,14 +143,14 @@ class TransformedArtifacts:
         Returns:
             Float32 array of shape (n_authors, embedding_dim).
         """
-        return np.load(self.path("author_embeddings.npy"))
+        return np.load(self.model_path("author_embeddings.npy"))
 
     @cached_property
     def author_id_to_index(self) -> dict[str, int]:
         """UCSD author_id string → row index in `author_embeddings`.
 
         Returns:
-            Mapping loaded from data/transformed/author_id_to_index.json.
+            Mapping loaded from shared/author_id_to_index.json.
         """
         return load_json(self.path("author_id_to_index.json"))
 
@@ -126,18 +168,18 @@ class TransformedArtifacts:
         """ISBN-13 → UCSD book_id, used by the v4 author fallback in ingest.
 
         Returns:
-            Mapping loaded from data/transformed/isbn13_to_book_id.json.
+            Mapping loaded from shared/isbn13_to_book_id.json.
         """
         return load_json(self.path("isbn13_to_book_id.json"))
 
     @cached_property
     def book_embeddings(self) -> np.ndarray:
-        """Per-book description embedding matrix (v1 feature input).
+        """Per-book description embedding matrix for the active model run.
 
         Returns:
             Float32 array of shape (n_books, embedding_dim).
         """
-        return np.load(self.path("book_embeddings.npy"))
+        return np.load(self.model_path("book_embeddings.npy"))
 
     @cached_property
     def genre_matrix(self) -> np.ndarray:
@@ -162,7 +204,7 @@ class TransformedArtifacts:
         """{p1, p99, median} parameters used to normalise pages at training time.
 
         Returns:
-            Mapping loaded from data/transformed/num_pages_norm_params.json.
+            Mapping loaded from shared/num_pages_norm_params.json.
         """
         return load_json(self.path("num_pages_norm_params.json"))
 

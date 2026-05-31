@@ -30,13 +30,14 @@ def load_item_side() -> tuple[dict[str, int], np.ndarray, np.ndarray, np.ndarray
     Returns:
         Tuple of (book_id_to_index, book_embeddings, genre_matrix, pages_vec).
     """
-    transformed = DATA_DIR / "transformed"
-    with open(transformed / "book_id_to_index.json") as f:
+    shared = DATA_DIR / "transformed" / "shared"
+    minilm = DATA_DIR / "transformed" / "v1_minilm"
+    with open(shared / "book_id_to_index.json") as f:
         book_id_to_index = json.load(f)
 
-    book_embeddings = np.load(transformed / "book_embeddings.npy").astype(np.float32)
-    genre_matrix = np.load(transformed / "genre_matrix.npy").astype(np.float32)
-    pages_vec = np.load(transformed / "num_pages_normalized.npy").astype(np.float32)
+    book_embeddings = np.load(minilm / "book_embeddings.npy").astype(np.float32)
+    genre_matrix = np.load(shared / "genre_matrix.npy").astype(np.float32)
+    pages_vec = np.load(shared / "num_pages_normalized.npy").astype(np.float32)
     print(
         f"Books: {book_embeddings.shape[0]:,} | embedding_dim: {book_embeddings.shape[1]} | "
         f"n_genres: {genre_matrix.shape[1]}"
@@ -54,9 +55,9 @@ def load_train_interactions(book_id_to_index: dict[str, int]) -> tuple[pl.DataFr
         Tuple of (interactions DataFrame with user_idx/book_idx columns, list of
         unique user_id hashes ordered by their assigned indices).
     """
-    transformed = DATA_DIR / "transformed"
+    shared = DATA_DIR / "transformed" / "shared"
     interactions = (
-        pl.scan_parquet(transformed / "books_with_interactions.parquet")
+        pl.scan_parquet(shared / "books_with_interactions.parquet")
         .filter(pl.col("data_split") == "train")
         .select("user_id", "book_id", "rating")
         .collect()
@@ -270,9 +271,11 @@ def main() -> None:
 
     compact_id_map = {unique_users[old_idx]: new_idx for new_idx, old_idx in enumerate(valid_old_indices)}
 
-    transformed = DATA_DIR / "transformed"
-    np.save(transformed / "train_user_features.npy", user_features)
-    with open(transformed / "user_id_to_index.json", "w") as f:
+    shared = DATA_DIR / "transformed" / "shared"
+    minilm = DATA_DIR / "transformed" / "v1_minilm"
+    minilm.mkdir(parents=True, exist_ok=True)
+    np.save(minilm / "train_user_features_basic.npy", user_features)
+    with open(shared / "user_id_to_index.json", "w") as f:
         json.dump(compact_id_map, f)
 
     print(f"\nSaved train_user_features {user_features.shape}")

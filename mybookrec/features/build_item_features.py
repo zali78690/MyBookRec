@@ -32,7 +32,7 @@ def load_vocab_and_books() -> tuple[list[str], pl.DataFrame]:
     Raises:
         AssertionError: If the parquet's genre struct fields don't equal the vocab.
     """
-    books = pl.read_parquet(DATA_DIR / "transformed" / "books_with_genres.parquet")
+    books = pl.read_parquet(DATA_DIR / "transformed" / "shared" / "books_with_genres.parquet")
     with open(ROOT_DIR / "mybookrec" / "features" / "genre_vocab.json") as f:
         vocab = json.load(f)
 
@@ -106,15 +106,16 @@ def normalize_pages(books: pl.DataFrame) -> tuple[np.ndarray, dict[str, float]]:
 def main() -> None:
     """Build and save the genre matrix + normalized pages."""
     vocab, books = load_vocab_and_books()
-    transformed = DATA_DIR / "transformed"
+    shared = DATA_DIR / "transformed" / "shared"
+    shared.mkdir(parents=True, exist_ok=True)
 
     genre_matrix = build_genre_matrix(books, vocab)
-    np.save(transformed / "genre_matrix.npy", genre_matrix)
-    print(f"Saved genre_matrix {genre_matrix.shape} to data/transformed/genre_matrix.npy")
+    np.save(shared / "genre_matrix.npy", genre_matrix)
+    print(f"Saved genre_matrix {genre_matrix.shape} to {shared / 'genre_matrix.npy'}")
 
     normalized_pages, params = normalize_pages(books)
-    np.save(transformed / "num_pages_normalized.npy", normalized_pages)
-    with open(transformed / "num_pages_norm_params.json", "w") as f:
+    np.save(shared / "num_pages_normalized.npy", normalized_pages)
+    with open(shared / "num_pages_norm_params.json", "w") as f:
         json.dump(params, f, indent=2)
     print("Saved normalized pages + params")
 

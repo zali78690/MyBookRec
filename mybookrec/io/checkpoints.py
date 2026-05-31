@@ -57,22 +57,29 @@ class FeatureSet:
         self.item_files = item_files
 
 
+# Paths are relative to `data/transformed/`. The two-segment leading dir encodes both the
+# embedding-model run (`v1_minilm`) and whether the artifact is model-independent (`shared/`)
+# — see plans/book-recommender-mvp-plan.md for the full layout.
 FEATURE_SETS: tuple[FeatureSet, ...] = (
     FeatureSet(
-        name="v1",
+        name="minilm_basic",
         user_input_dim=779,
         item_input_dim=395,
-        bulk_user_npy="train_user_features.npy",
-        personal_user_npy="user_features.npy",
-        item_files=("book_embeddings.npy", "genre_matrix.npy", "num_pages_normalized.npy"),
+        bulk_user_npy="v1_minilm/train_user_features_basic.npy",
+        personal_user_npy="v1_minilm/user_features_basic.npy",
+        item_files=(
+            "v1_minilm/book_embeddings.npy",
+            "shared/genre_matrix.npy",
+            "shared/num_pages_normalized.npy",
+        ),
     ),
     FeatureSet(
-        name="v4",
+        name="minilm_author",
         user_input_dim=1163,
         item_input_dim=779,
-        bulk_user_npy="train_user_features_v4.npy",
-        personal_user_npy="user_features_v4.npy",
-        item_files=("item_features_v4.npy",),
+        bulk_user_npy="v1_minilm/train_user_features.npy",
+        personal_user_npy="v1_minilm/user_features.npy",
+        item_files=("v1_minilm/item_features.npy",),
     ),
 )
 
@@ -118,7 +125,7 @@ def detect_available_feature_set() -> FeatureSet:
     """
     transformed = DATA_DIR / "transformed"
     for fs in reversed(FEATURE_SETS):
-        if all((transformed / f).exists() for f in fs.item_files):
+        if all((transformed / path).exists() for path in fs.item_files):
             return fs
     return FEATURE_SETS[0]
 

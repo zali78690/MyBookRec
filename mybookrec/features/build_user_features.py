@@ -25,15 +25,16 @@ def load_inputs() -> tuple[pl.DataFrame, dict[str, int], np.ndarray, np.ndarray,
     Returns:
         Tuple of (my_books csv, book_id→idx map, book_embeddings, genre_matrix, pages_vec).
     """
-    transformed = DATA_DIR / "transformed"
+    shared = DATA_DIR / "transformed" / "shared"
+    minilm = DATA_DIR / "transformed" / "v1_minilm"
 
-    my_books = pl.read_csv(transformed / "my_books.csv")
-    with open(transformed / "book_id_to_index.json") as f:
+    my_books = pl.read_csv(shared / "my_books.csv")
+    with open(shared / "book_id_to_index.json") as f:
         book_id_to_index = json.load(f)
 
-    book_embeddings = np.load(transformed / "book_embeddings.npy")
-    genre_matrix = np.load(transformed / "genre_matrix.npy")
-    pages_vec = np.load(transformed / "num_pages_normalized.npy")
+    book_embeddings = np.load(minilm / "book_embeddings.npy")
+    genre_matrix = np.load(shared / "genre_matrix.npy")
+    pages_vec = np.load(shared / "num_pages_normalized.npy")
 
     print(f"my_books rows:        {len(my_books):,}")
     print(f"book_id_to_index:     {len(book_id_to_index):,} entries")
@@ -178,7 +179,8 @@ def main() -> None:
     assert user_features.shape == (expected_dim,), f"Expected ({expected_dim},), got {user_features.shape}"
     assert not np.isnan(user_features).any(), "NaNs in user_features — check upstream"
 
-    output = DATA_DIR / "transformed" / "user_features.npy"
+    output = DATA_DIR / "transformed" / "v1_minilm" / "user_features_basic.npy"
+    output.parent.mkdir(parents=True, exist_ok=True)
     np.save(output, user_features)
     print(f"Saved user_features {user_features.shape} to {output.relative_to(DATA_DIR.parent)}")
 

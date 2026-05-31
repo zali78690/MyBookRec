@@ -126,7 +126,8 @@ def run() -> tuple[int, int, int]:
     combined = pl.concat([ucsd, silver], how="vertical")
     combined = keep_embeddable_rows(combined)
 
-    out_path = settings.transformed_dir / "embedding_input.parquet"
+    out_path = settings.transformed_dir / "shared" / "embedding_input.parquet"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     combined.write_parquet(out_path, compression="zstd")
     size_mb = out_path.stat().st_size / (1024 * 1024)
     print(

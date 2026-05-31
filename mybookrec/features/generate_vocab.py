@@ -25,7 +25,7 @@ def extract_genre_vocab() -> list[str]:
     Returns:
         List of genre name strings in the parquet's natural field order.
     """
-    schema = pl.read_parquet(DATA_DIR / "transformed" / "books_with_genres.parquet").schema
+    schema = pl.read_parquet(DATA_DIR / "transformed" / "shared" / "books_with_genres.parquet").schema
     return [field.name for field in schema["genres"].fields]
 
 

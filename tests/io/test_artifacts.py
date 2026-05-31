@@ -14,17 +14,25 @@ from mybookrec.io.artifacts import TransformedArtifacts
 
 @pytest.fixture
 def artifact_dir(tmp_path: pathlib.Path) -> pathlib.Path:
-    """A tmp dir pre-populated with one fixture per artifact a real pipeline would write."""
-    (tmp_path / "book_id_to_index.json").write_text(json.dumps({"book_a": 0, "book_b": 1}))
-    (tmp_path / "user_id_to_index.json").write_text(json.dumps({"user_x": 0, "user_y": 1}))
-    (tmp_path / "author_id_to_index.json").write_text(json.dumps({"auth_1": 0}))
-    (tmp_path / "isbn13_to_book_id.json").write_text(json.dumps({"9780000000001": "book_a"}))
-    (tmp_path / "num_pages_norm_params.json").write_text(json.dumps({"p1": 50.0, "p99": 800.0, "median": 300.0}))
-    np.save(tmp_path / "author_embeddings.npy", np.array([[1.0, 0.0]], dtype=np.float32))
-    np.save(tmp_path / "book_to_author_idx.npy", np.array([0, -1], dtype=np.int64))
-    np.save(tmp_path / "book_embeddings.npy", np.zeros((2, 4), dtype=np.float32))
-    np.save(tmp_path / "genre_matrix.npy", np.zeros((2, 3), dtype=np.float32))
-    np.save(tmp_path / "num_pages_normalized.npy", np.array([0.1, 0.5], dtype=np.float32))
+    """A tmp dir pre-populated with one fixture per artifact a real pipeline would write.
+
+    Mirrors the on-disk layout: shared files under `shared/`, model-specific files
+    under `v1_minilm/` (the default model run).
+    """
+    shared = tmp_path / "shared"
+    minilm = tmp_path / "v1_minilm"
+    shared.mkdir()
+    minilm.mkdir()
+    (shared / "book_id_to_index.json").write_text(json.dumps({"book_a": 0, "book_b": 1}))
+    (shared / "user_id_to_index.json").write_text(json.dumps({"user_x": 0, "user_y": 1}))
+    (shared / "author_id_to_index.json").write_text(json.dumps({"auth_1": 0}))
+    (shared / "isbn13_to_book_id.json").write_text(json.dumps({"9780000000001": "book_a"}))
+    (shared / "num_pages_norm_params.json").write_text(json.dumps({"p1": 50.0, "p99": 800.0, "median": 300.0}))
+    np.save(minilm / "author_embeddings.npy", np.array([[1.0, 0.0]], dtype=np.float32))
+    np.save(shared / "book_to_author_idx.npy", np.array([0, -1], dtype=np.int64))
+    np.save(minilm / "book_embeddings.npy", np.zeros((2, 4), dtype=np.float32))
+    np.save(shared / "genre_matrix.npy", np.zeros((2, 3), dtype=np.float32))
+    np.save(shared / "num_pages_normalized.npy", np.array([0.1, 0.5], dtype=np.float32))
     pl.DataFrame(
         {
             "book_id": ["book_a", "book_b"],
@@ -34,7 +42,7 @@ def artifact_dir(tmp_path: pathlib.Path) -> pathlib.Path:
             "is_ebook": [True, False],
             "genres": [{"fiction": 5}, {"fiction": 2}],
         }
-    ).write_parquet(tmp_path / "books_with_genres.parquet")
+    ).write_parquet(shared / "books_with_genres.parquet")
     return tmp_path
 
 
@@ -73,8 +81,8 @@ def test_save_book_id_to_index_persists_and_invalidates_cache(artifact_dir: path
     new_mapping = {**original, "book_c": 2}
     artifacts.save_book_id_to_index(new_mapping)
 
-    # Disk reflects the new mapping.
-    assert json.loads((artifact_dir / "book_id_to_index.json").read_text()) == new_mapping
+    # Disk reflects the new mapping (under shared/).
+    assert json.loads((artifact_dir / "shared" / "book_id_to_index.json").read_text()) == new_mapping
     # Cache was invalidated — next read sees the extended mapping.
     assert artifacts.book_id_to_index == new_mapping
     assert artifacts.index_to_book_id == {0: "book_a", 1: "book_b", 2: "book_c"}
@@ -89,7 +97,14 @@ def test_failure_case_missing_artifact_raises_file_not_found(tmp_path: pathlib.P
         _ = artifacts.author_embeddings
 
 
-def test_path_resolves_relative_to_base_dir(tmp_path: pathlib.Path) -> None:
-    """Edge case: `path(name)` is just `base_dir / name` — useful for caller-side checks."""
+def test_path_resolves_bare_filenames_under_shared(tmp_path: pathlib.Path) -> None:
+    """Edge case: bare filenames go under shared/; slash-paths resolve verbatim."""
     artifacts = TransformedArtifacts(tmp_path)
-    assert artifacts.path("anything.json") == tmp_path / "anything.json"
+    assert artifacts.path("anything.json") == tmp_path / "shared" / "anything.json"
+    assert artifacts.path("v2_mxbai/anything.npy") == tmp_path / "v2_mxbai" / "anything.npy"
+
+
+def test_model_path_resolves_under_active_model_run(tmp_path: pathlib.Path) -> None:
+    """Edge case: model_path joins under the configured model_run subdir."""
+    artifacts = TransformedArtifacts(tmp_path, model_run="v2_mxbai")
+    assert artifacts.model_path("book_embeddings.npy") == tmp_path / "v2_mxbai" / "book_embeddings.npy"

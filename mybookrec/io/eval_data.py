@@ -53,7 +53,7 @@ def load_split_interactions(
     book_map = id_map_df(artifacts.book_id_to_index, "book_id", "book_idx")
 
     q = (
-        pl.scan_parquet(DATA_DIR / "transformed" / "training_interactions.parquet")
+        pl.scan_parquet(DATA_DIR / "transformed" / "shared" / "training_interactions.parquet")
         .filter(pl.col("data_split") == data_split)
         .select("user_id", "book_id", "rating")
         .with_columns(pl.col("book_id").cast(pl.String))

@@ -27,7 +27,7 @@ def load_books_lazy() -> pl.LazyFrame:
         LazyFrame ready to join against genres/interactions.
     """
     return (
-        pl.scan_ndjson(DATA_DIR / "raw" / "goodreads_books.json.gz", low_memory=True)
+        pl.scan_ndjson(DATA_DIR / "raw" / "ucsd" / "goodreads_books.json.gz", low_memory=True)
         .select(
             pl.col("book_id"),
             pl.col("num_pages").cast(pl.Int64, strict=False),
@@ -47,7 +47,7 @@ def load_genres_lazy() -> pl.LazyFrame:
     Returns:
         LazyFrame with (book_id, genres) columns.
     """
-    return pl.scan_ndjson(DATA_DIR / "raw" / "goodreads_book_genres_initial.json", low_memory=True).select(
+    return pl.scan_ndjson(DATA_DIR / "raw" / "ucsd" / "goodreads_book_genres_initial.json", low_memory=True).select(
         pl.col("book_id"), pl.col("genres")
     )
 
@@ -59,7 +59,7 @@ def load_interactions_lazy() -> pl.LazyFrame:
         LazyFrame with (user_id, book_id, rating, date_added) where rating > 0.
     """
     return (
-        pl.scan_ndjson(DATA_DIR / "raw" / "goodreads_interactions_dedup.json.gz", low_memory=True)
+        pl.scan_ndjson(DATA_DIR / "raw" / "ucsd" / "goodreads_interactions_dedup.json.gz", low_memory=True)
         .select(
             pl.col("user_id"),
             pl.col("book_id"),
@@ -72,8 +72,8 @@ def load_interactions_lazy() -> pl.LazyFrame:
 
 def save_personal_my_books() -> None:
     """Transform the personal Goodreads CSV export → slim my_books.csv."""
-    src = DATA_DIR / "raw" / "goodreads_library_export.csv"
-    dst = DATA_DIR / "transformed" / "my_books.csv"
+    src = DATA_DIR / "raw" / "personal" / "goodreads_library_export.csv"
+    dst = DATA_DIR / "transformed" / "shared" / "my_books.csv"
     (
         pl.read_csv(src)
         .select(
@@ -88,7 +88,7 @@ def save_personal_my_books() -> None:
 
 def save_books_with_genres(books: pl.LazyFrame, genres: pl.LazyFrame) -> None:
     """Inner-join books with genres, drop genre-less books, write parquet."""
-    output = DATA_DIR / "transformed" / "books_with_genres.parquet"
+    output = DATA_DIR / "transformed" / "shared" / "books_with_genres.parquet"
     books.join(genres, on="book_id", how="inner").sink_parquet(output)
     print(f"Saved {output.name}")
 
@@ -99,7 +99,7 @@ def save_books_with_interactions(books: pl.LazyFrame, interactions: pl.LazyFrame
     Per-user dense-rank by date_added then bucket into train (first 70%),
     test (next 20%), validation (last 10%). Per-user splitting prevents leakage.
     """
-    output = DATA_DIR / "transformed" / "books_with_interactions.parquet"
+    output = DATA_DIR / "transformed" / "shared" / "books_with_interactions.parquet"
     (
         books.join(interactions, on="book_id", how="inner")
         .with_columns(pl.col("date_added").rank("dense", descending=False).over("user_id").alias("interaction_rank"))
@@ -118,7 +118,7 @@ def save_books_with_interactions(books: pl.LazyFrame, interactions: pl.LazyFrame
 
 def main() -> None:
     """Run the full raw → cleaned-parquet pipeline."""
-    (DATA_DIR / "transformed").mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "transformed" / "shared").mkdir(parents=True, exist_ok=True)
     books = load_books_lazy()
     genres = load_genres_lazy()
     interactions = load_interactions_lazy()

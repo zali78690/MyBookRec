@@ -42,8 +42,8 @@ def normalise_isbn(value: object) -> str | None:
 def main() -> None:
     """Read raw books, write the ISBN-13 → book_id JSON map."""
     settings = get_settings()
-    raw_path = settings.raw_dir / "goodreads_books.json.gz"
-    out_path = settings.transformed_dir / "isbn13_to_book_id.json"
+    raw_path = settings.raw_dir / "ucsd" / "goodreads_books.json.gz"
+    out_path = settings.transformed_dir / "shared" / "isbn13_to_book_id.json"
 
     mapping: dict[str, str] = {}
     n_total = 0

@@ -14,17 +14,17 @@ from mybookrec.settings import get_settings
 
 
 def write_ucsd(tmp_path: pathlib.Path) -> None:
-    """Write a tiny synthetic books_with_genres.parquet under <tmp>/transformed/."""
-    transformed = tmp_path / "transformed"
-    transformed.mkdir(parents=True, exist_ok=True)
+    """Write a tiny synthetic books_with_genres.parquet under <tmp>/transformed/shared/."""
+    shared = tmp_path / "transformed" / "shared"
+    shared.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
         {
             "book_id": ["1", "2"],
             "title": ["UCSD One", "UCSD Two"],
             "description": ["desc one", None],
         }
-    ).write_parquet(transformed / "books_with_genres.parquet")
-    (transformed / "isbn13_to_book_id.json").write_text(json.dumps({"9780000000001": "1"}))
+    ).write_parquet(shared / "books_with_genres.parquet")
+    (shared / "isbn13_to_book_id.json").write_text(json.dumps({"9780000000001": "1"}))
 
 
 def write_silver(tmp_path: pathlib.Path, rows: list[dict]) -> None:
@@ -57,7 +57,7 @@ def test_expected_use_concats_ucsd_and_silver(isolated_data: pathlib.Path) -> No
     assert n_silver == 1
     assert n_total == 3
 
-    out = pl.read_parquet(isolated_data / "transformed" / "embedding_input.parquet")
+    out = pl.read_parquet(isolated_data / "transformed" / "shared" / "embedding_input.parquet")
     assert set(out.columns) == {"book_id", "title", "description", "source"}
     assert out["source"].unique().sort().to_list() == ["silver_openlibrary", "ucsd"]
 
@@ -113,7 +113,7 @@ def test_artifact_size_is_reasonable_proxy_via_row_count(isolated_data: pathlib.
         ],
     )
     _, _, n_total = build_embedding_input.run()
-    out = pl.read_parquet(isolated_data / "transformed" / "embedding_input.parquet")
+    out = pl.read_parquet(isolated_data / "transformed" / "shared" / "embedding_input.parquet")
     assert len(out) == n_total
 
 

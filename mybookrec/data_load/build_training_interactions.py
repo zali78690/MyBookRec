@@ -18,9 +18,9 @@ from mybookrec import DATA_DIR
 
 def build_slim_parquet() -> None:
     """Stream the full interactions parquet → 4-column zstd parquet."""
-    transformed = DATA_DIR / "transformed"
-    src = transformed / "books_with_interactions.parquet"
-    dst = transformed / "training_interactions.parquet"
+    shared = DATA_DIR / "transformed" / "shared"
+    src = shared / "books_with_interactions.parquet"
+    dst = shared / "training_interactions.parquet"
 
     (pl.scan_parquet(src).select("user_id", "book_id", "rating", "data_split").sink_parquet(dst, compression="zstd"))
 
@@ -32,7 +32,7 @@ def build_slim_parquet() -> None:
 
 def verify_slim_parquet() -> None:
     """Sanity check: total row count and split distribution."""
-    slim = pl.read_parquet(DATA_DIR / "transformed" / "training_interactions.parquet")
+    slim = pl.read_parquet(DATA_DIR / "transformed" / "shared" / "training_interactions.parquet")
     print(f"\nRows: {len(slim):,}")
     print(slim.head(3))
     print("\nSplit distribution:")

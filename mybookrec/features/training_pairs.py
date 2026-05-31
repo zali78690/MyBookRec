@@ -57,14 +57,14 @@ class TrainingPairsDataset(Dataset):
 
         t0 = time.time()
         log(f"[TrainingPairsDataset/{data_split}] loading id mappings...")
-        with open(DATA_DIR / "transformed" / "user_id_to_index.json") as f:
+        with open(DATA_DIR / "transformed" / "shared" / "user_id_to_index.json") as f:
             user_id_to_index = json.load(f)
-        with open(DATA_DIR / "transformed" / "book_id_to_index.json") as f:
+        with open(DATA_DIR / "transformed" / "shared" / "book_id_to_index.json") as f:
             book_id_to_index = json.load(f)
 
         log(f"[TrainingPairsDataset/{data_split}] scanning interactions parquet... ({time.time() - t0:.1f}s)")
         interactions = (
-            pl.scan_parquet(DATA_DIR / "transformed" / "training_interactions.parquet")
+            pl.scan_parquet(DATA_DIR / "transformed" / "shared" / "training_interactions.parquet")
             .filter(pl.col("data_split") == data_split)
             .select("user_id", "book_id", "rating")
             .collect()
