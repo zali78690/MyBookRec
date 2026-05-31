@@ -162,12 +162,12 @@ def parse_dump_line(line: bytes) -> dict[str, Any] | None:
 def is_keepable_work(record: dict[str, Any], min_year: int | None = None) -> bool:
     """Coarse filter: keep works with a title + at least one subject + a description.
 
-    Optionally also gate on `first_publish_date`'s year, so we can supplement the
-    UCSD catalog with only post-2017 books instead of duplicating the existing data.
+    Optionally also gate on `extract_record_year`, so we can supplement the UCSD
+    catalog with only post-2017 books instead of duplicating the existing data.
 
     Args:
         record: One parsed work record.
-        min_year: If set, drop records whose `first_publish_date` year is before this.
+        min_year: If set, drop records whose effective year is before this.
 
     Returns:
         True if worth keeping for downstream silver processing.
@@ -179,24 +179,44 @@ def is_keepable_work(record: dict[str, Any], min_year: int | None = None) -> boo
     if not record.get("description"):
         return False
     if min_year is not None:
-        year = extract_first_publish_year(record.get("first_publish_date"))
+        year = extract_record_year(record)
         if year is None or year < min_year:
             return False
     return True
 
 
-def extract_first_publish_year(value: object) -> int | None:
-    """Pull a 4-digit year out of a free-text `first_publish_date` field.
+def extract_record_year(record: dict[str, Any]) -> int | None:
+    """Best-effort year for a work record.
 
-    OL records publish dates as strings of variable shape: "2019", "2019-03",
-    "2019-03-15", "March 2019", etc. We look for the first 4-digit run that
-    plausibly is a year (1500-2099) and return it.
+    Most OL works records are missing `first_publish_date` entirely. We fall back
+    to the `created` field (when the OL record was added) so the year filter is
+    meaningful across the dump. `created` is a proxy: brand-new books are usually
+    created near their publication date, while old books being digitized today
+    would also pass — those are still useful to ingest (they have descriptions /
+    subjects, and ISBN dedup against the trained catalog filters out anything
+    already in UCSD).
 
     Args:
-        value: The raw `first_publish_date` value, or any other type.
+        record: One parsed work record.
 
     Returns:
-        Year as int, or None if no plausible year is found.
+        Year as int, or None if neither field yields a plausible year.
+    """
+    year = extract_year_from_text(record.get("first_publish_date"))
+    if year is not None:
+        return year
+    return extract_year_from_text(get_datetime_value(record.get("created")))
+
+
+def extract_year_from_text(value: object) -> int | None:
+    """Pull a 4-digit year out of a free-text date string.
+
+    Args:
+        value: Anything; only strings are considered. Shapes like "2019",
+            "2019-03", "March 2019", "2019-03-15T12:00:00" all parse.
+
+    Returns:
+        Year as int (1500-2099), or None if no plausible year is found.
     """
     if not isinstance(value, str):
         return None
@@ -206,6 +226,25 @@ def extract_first_publish_year(value: object) -> int | None:
         year = int(match.group(1))
         if 1500 <= year <= 2099:
             return year
+    return None
+
+
+def get_datetime_value(field: object) -> str | None:
+    """Unwrap OL's `{type, value}` datetime wrapper to the bare ISO string.
+
+    Args:
+        field: The raw `created` or `last_modified` field as it appears in a
+            dump record, or any other type.
+
+    Returns:
+        The ISO string, or None if the field isn't in the expected shape.
+    """
+    if isinstance(field, dict):
+        value = field.get("value")
+        if isinstance(value, str):
+            return value
+    if isinstance(field, str):
+        return field
     return None
 
 

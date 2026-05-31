@@ -48,25 +48,50 @@ def test_is_keepable_work_requires_title_subjects_description() -> None:
     assert bulk_openlibrary.is_keepable_work({"title": "T", "subjects": ["A"]}) is False
 
 
-def test_is_keepable_work_respects_min_year() -> None:
-    """Expected use: min_year drops records published before the cutoff."""
+def test_is_keepable_work_respects_min_year_from_publish_date() -> None:
+    """Expected use: min_year drops records with explicit first_publish_date before the cutoff."""
     base = {"title": "T", "subjects": ["A"], "description": "D"}
     assert bulk_openlibrary.is_keepable_work({**base, "first_publish_date": "2020"}, min_year=2018) is True
     assert bulk_openlibrary.is_keepable_work({**base, "first_publish_date": "2015"}, min_year=2018) is False
-    # Records with no parseable year fail closed when min_year is set.
+
+
+def test_is_keepable_work_falls_back_to_created_year() -> None:
+    """Edge case: when first_publish_date is missing, created date is the proxy.
+
+    Reflects reality: most OL works lack first_publish_date. Without this fallback the
+    year filter would drop ~all records.
+    """
+    base = {"title": "T", "subjects": ["A"], "description": "D"}
+    created_recent = {"type": "/type/datetime", "value": "2023-04-12T10:00:00"}
+    created_old = {"type": "/type/datetime", "value": "2015-06-01T00:00:00"}
+    assert bulk_openlibrary.is_keepable_work({**base, "created": created_recent}, min_year=2018) is True
+    assert bulk_openlibrary.is_keepable_work({**base, "created": created_old}, min_year=2018) is False
+    # Records with no year at all fail closed.
     assert bulk_openlibrary.is_keepable_work(base, min_year=2018) is False
 
 
-def test_extract_first_publish_year_handles_variable_formats() -> None:
+def test_extract_year_from_text_handles_variable_formats() -> None:
     """Edge case: dates arrive in many shapes; we want a year out of each plausible one."""
-    assert bulk_openlibrary.extract_first_publish_year("2020") == 2020
-    assert bulk_openlibrary.extract_first_publish_year("2020-03-15") == 2020
-    assert bulk_openlibrary.extract_first_publish_year("March 2020") == 2020
-    assert bulk_openlibrary.extract_first_publish_year("Spring 2020") == 2020
-    assert bulk_openlibrary.extract_first_publish_year(None) is None
-    assert bulk_openlibrary.extract_first_publish_year("no year here") is None
+    assert bulk_openlibrary.extract_year_from_text("2020") == 2020
+    assert bulk_openlibrary.extract_year_from_text("2020-03-15") == 2020
+    assert bulk_openlibrary.extract_year_from_text("2020-03-15T12:00:00") == 2020
+    assert bulk_openlibrary.extract_year_from_text("March 2020") == 2020
+    assert bulk_openlibrary.extract_year_from_text("Spring 2020") == 2020
+    assert bulk_openlibrary.extract_year_from_text(None) is None
+    assert bulk_openlibrary.extract_year_from_text("no year here") is None
     # Implausible years are rejected.
-    assert bulk_openlibrary.extract_first_publish_year("9999-01-01") is None
+    assert bulk_openlibrary.extract_year_from_text("9999-01-01") is None
+
+
+def test_get_datetime_value_unwraps_ol_wrapper() -> None:
+    """Edge case: OL's `{type, value}` shape unwraps to the inner ISO string."""
+    assert (
+        bulk_openlibrary.get_datetime_value({"type": "/type/datetime", "value": "2023-01-01T00:00:00"})
+        == "2023-01-01T00:00:00"
+    )
+    assert bulk_openlibrary.get_datetime_value("2023-01-01") == "2023-01-01"
+    assert bulk_openlibrary.get_datetime_value(None) is None
+    assert bulk_openlibrary.get_datetime_value(42) is None
 
 
 def test_adapt_work_extracts_author_keys_as_grouping_ids() -> None:
