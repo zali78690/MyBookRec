@@ -88,6 +88,19 @@ stages:
     outs:
       - data/transformed/isbn13_to_book_id.json
 
+  build_embedding_input:
+    # Combined UCSD + silver-bulk catalog with minimal schema (book_id, title,
+    # description, source). Upload data/transformed/embedding_input.parquet to
+    # Google Drive and the Colab embed.ipynb reads it directly.
+    cmd: .venv/bin/python -m mybookrec.features.build_embedding_input
+    deps:
+      - data/transformed/books_with_genres.parquet
+      - data/transformed/isbn13_to_book_id.json
+      - data/silver/books.parquet
+      - mybookrec/features/build_embedding_input.py
+    outs:
+      - data/transformed/embedding_input.parquet
+
   # --- Ingest lane (bronze → silver → gold → FAISS refresh) ---
   # Bronze is NOT a DVC stage — it's produced by interactive `ingest.cli fetch`
   # or `bulk_openlibrary`, both of which depend on external network resources

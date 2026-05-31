@@ -126,6 +126,12 @@ def detect_available_feature_set() -> FeatureSet:
 def load_npy_to_device(path: Path, device: str) -> torch.Tensor:
     """Load a .npy file as a float32 torch tensor on the given device.
 
+    Embeddings on disk may be stored as float16 to halve their footprint (this is the
+    default for the Colab-produced MPNet/mxbai outputs since switching to Matryoshka +
+    FP16 storage). We always upcast to float32 here because PyTorch math on MPS/CPU
+    is consistently faster + more numerically stable in fp32, and the cast cost is
+    negligible vs the size savings on disk + network.
+
     Args:
         path: Path to the .npy file.
         device: Target torch device string ("cpu", "cuda", "mps").

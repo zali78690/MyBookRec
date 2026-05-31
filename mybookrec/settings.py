@@ -44,8 +44,20 @@ class Settings(BaseSettings):
 
     # ----- embeddings -----
     embed_model_name: str = Field(
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        description="HF model id for description embeddings. Swap to all-mpnet-base-v2 (768-dim) when ready.",
+        default="mixedbread-ai/mxbai-embed-large-v1",
+        description=(
+            "HF model id for description embeddings. mxbai-embed-large-v1 is Matryoshka-trained "
+            "so we can truncate cleanly via `embed_dim`. Top of MTEB at time of writing."
+        ),
+    )
+    embed_dim: int = Field(
+        default=512,
+        ge=64,
+        le=1024,
+        description=(
+            "Truncate the embedding vector to this many leading dims (Matryoshka). "
+            "512 is the sweet spot for mxbai: ~98% of the 1024-dim quality at half the size."
+        ),
     )
 
     # ----- experiment tracking (MLflow) -----
